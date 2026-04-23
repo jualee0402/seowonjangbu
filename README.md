@@ -36,12 +36,12 @@
 
 ## 기술 스택
 
-프론트엔드: React 18 + TypeScript 
-빌드 도구: Vite 5 
-스타일: Tailwind CSS v4 
-배포: Vercel 
-데이터 저장: localStorage
-앱화: PWA 
+1. 프론트엔드: React 18 + TypeScript 
+2. 빌드 도구: Vite 5 
+3. 스타일: Tailwind CSS v4 
+4. 배포: Vercel 
+5. 데이터 저장: localStorage
+6. 앱화: PWA 
 
 
 ## 사용 방법
