@@ -1,3 +1,9 @@
+/**
+ * 서원동 초과근무·급량비 계산기
+ * @author 이주아
+ * @since 2026.04
+ */
+
 import { useEffect, useMemo, useState } from "react";
 
 type WorkRecord = {
