@@ -4,6 +4,7 @@
 
 **개발자:** 이주아 (jualee0402)  
 **배포일:** 2026.04.28
+
 **서비스 주소:** https://seowonjangbu.vercel.app
 
 
