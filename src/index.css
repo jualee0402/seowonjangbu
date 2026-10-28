@@ -1,11 +1,11 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #f3f4f6;
+  --bg: #f1f4f9;
   --card: #ffffff;
-  --text: #111827;
-  --muted: #6b7280;
-  --border: #e5e7eb;
+  --text: #1e293b;
+  --muted: #64748b;
+  --border: #e2e8f0;
   --navy: #1e3a8a;
   --navy-soft: #eef2ff;
   --navy-line: #c7d2fe;
@@ -54,7 +54,8 @@
   }
 
   body {
-    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+    /* Pretendard는 index.html에서 불러옴. 오프라인이면 기기 기본 글꼴 */
+    font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
     background: var(--bg);
     color: var(--text);
     font-size: 16px;
