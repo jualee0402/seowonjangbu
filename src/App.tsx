@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import logoUrl from "./assets/chogeunbap.svg";
+import { APP_INFO } from "./lib/appInfo";
 import {
   combineDateTime,
   computeRecord,
@@ -369,6 +370,25 @@ export default function App({ banner }: { banner?: ReactNode }) {
     return true;
   }
 
+  /** 앱 주소 공유: 휴대폰은 공유 창(카카오톡 등), 안 되면 주소 복사 */
+  async function shareApp() {
+    const { name, url } = APP_INFO;
+    if (typeof navigator.share === "function") {
+      try {
+        await navigator.share({ title: name, text: `${name} · 서원동 초과근무·급량비 계산기`, url });
+        return;
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return; // 공유 창을 닫음
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setToast("주소를 복사했어요");
+    } catch {
+      setToast(url.replace("https://", ""));
+    }
+  }
+
   function openHolidaySheet() {
     setHolidaySheetMonth(viewMonth);
     setSheet("holiday");
@@ -556,6 +576,7 @@ export default function App({ banner }: { banner?: ReactNode }) {
       {sheet === "settings" && (
         <SettingsSheet
           onClose={() => setSheet(null)}
+          onShareApp={shareApp}
           onOpenHoliday={openHolidaySheet}
           onOpenRules={() => setSheet("rules")}
           onResetRecords={() => {
@@ -1808,6 +1829,7 @@ function SelectedDayPanel({
 
 function SettingsSheet({
   onClose,
+  onShareApp,
   onOpenHoliday,
   onOpenRules,
   onResetRecords,
@@ -1815,6 +1837,7 @@ function SettingsSheet({
   onResetAll,
 }: {
   onClose: () => void;
+  onShareApp: () => void;
   onOpenHoliday: () => void;
   onOpenRules: () => void;
   onResetRecords: () => void;
@@ -1855,7 +1878,57 @@ function SettingsSheet({
           </button>
         </div>
       </div>
+      <AppInfo onShare={onShareApp} />
     </Sheet>
+  );
+}
+
+/** 앱 이름·버전·개발·문의·주소 (주소를 누르면 공유 또는 복사) */
+function AppInfo({ onShare }: { onShare: () => void }) {
+  const { name, version, developer, office, email, github, url } = APP_INFO;
+  const link = "underline-offset-2 hover:underline";
+  return (
+    <footer className="space-y-0.5 pt-3 pb-1 text-center text-[12px] leading-relaxed" style={{ color: C.muted }}>
+      <p className="flex items-center justify-center gap-1.5">
+        <img src={logoUrl} alt="" width={18} height={18} className="size-[18px] rounded-[5px]" />
+        <span>
+          <b className="font-semibold" style={{ color: "var(--text)" }}>
+            {name}
+          </b>{" "}
+          · 버전 {version}
+        </span>
+      </p>
+      <p>
+        <span className="inline-block">개발 {developer}</span> · <span className="inline-block">{office}</span>
+      </p>
+      <p>
+        <span className="inline-block">
+          문의{" "}
+          <a href={`mailto:${email}`} className={link}>
+            {email}
+          </a>
+        </span>{" "}
+        ·{" "}
+        <span className="inline-block">
+          GitHub{" "}
+          <a href={`https://github.com/${github}`} target="_blank" rel="noreferrer" className={link}>
+            {github}
+          </a>
+        </span>
+      </p>
+      <p>
+        주소{" "}
+        <button
+          type="button"
+          onClick={onShare}
+          title="공유하거나 복사하기"
+          className="font-semibold underline decoration-dotted underline-offset-2"
+          style={{ color: C.navy }}
+        >
+          {url.replace("https://", "")}
+        </button>
+      </p>
+    </footer>
   );
 }
 
