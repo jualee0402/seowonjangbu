@@ -13,11 +13,17 @@ export type Rules = {
   workEnd: string;
   /** 평일 공제 (분) */
   deductMinutes: number;
+  /** 하루 초과근무가 이 시간(분) 이상일 때만 인정 (평일은 공제 전 기준, 휴일 포함) */
+  minDailyMinutes: number;
   /** 하루 초과근무 상한 (분). null = 상한 없음 */
   weekdayCapMinutes: number | null;
   holidayCapMinutes: number | null;
-  /** 월 초과근무 한도 (시간). 화면에 참고로만 표시 */
+  /** 월 상한 (시간, 기본 초과근무=정액분 포함). 실적은 (월 상한 − 정액분)까지 인정 */
   monthlyLimitHours: number;
+  /** 기본 초과근무 시간 = 정액분 (시간). 매달 기본으로 받는 시간 */
+  fixedMonthlyHours: number;
+  /** 월 합계에서 1시간 미만(분 단위)은 버림 */
+  monthlyRoundDown: boolean;
   /** 급량비 1개 금액 (원) */
   mealPrice: number;
   /** 급량비 한 달 최대 개수 */
@@ -42,9 +48,12 @@ const BASE: Omit<Rules, "from"> = {
   workStart: "09:00",
   workEnd: "18:00",
   deductMinutes: 60,
+  minDailyMinutes: 60,
   weekdayCapMinutes: null,
   holidayCapMinutes: null,
   monthlyLimitHours: 57,
+  fixedMonthlyHours: 10,
+  monthlyRoundDown: true,
   mealPrice: 9000,
   mealMonthlyCap: 20,
   weekdayMealMinutes: 60,
@@ -57,7 +66,9 @@ const BASE: Omit<Rules, "from"> = {
 /**
  * 기본 규칙
  * - 2026년 9월까지: 하루 초과근무 4시간 상한
- * - 2026년 10월부터: 상한 없음 (「공무원수당 등에 관한 규정」 개정, 2026.10.1. 시행)
+ * - 2026년 10월부터: 상한 없음 (「지방공무원 수당 등에 관한 규정」 제15조 개정, 2026.10.1. 시행)
+ * - 공통: 월 57시간 상한(정액분 10시간 포함 → 실적 최대 47시간), 1일 1시간 이상일 때만 인정,
+ *   평일 1시간 공제·휴일 공제 없음, 월간 합산 시 분 단위 버림 (「지방공무원 보수업무 등 처리지침」)
  */
 export const DEFAULT_RULES: Rules[] = [
   { from: FIRST_FROM, ...BASE, weekdayCapMinutes: 240, holidayCapMinutes: 240 },
@@ -75,9 +86,12 @@ function canonical(r: Rules): Rules {
     workStart: r.workStart,
     workEnd: r.workEnd,
     deductMinutes: r.deductMinutes,
+    minDailyMinutes: r.minDailyMinutes,
     weekdayCapMinutes: r.weekdayCapMinutes,
     holidayCapMinutes: r.holidayCapMinutes,
     monthlyLimitHours: r.monthlyLimitHours,
+    fixedMonthlyHours: r.fixedMonthlyHours,
+    monthlyRoundDown: r.monthlyRoundDown,
     mealPrice: r.mealPrice,
     mealMonthlyCap: r.mealMonthlyCap,
     weekdayMealMinutes: r.weekdayMealMinutes,
@@ -122,7 +136,11 @@ export function validateRules(r: Rules): string[] {
     errors.push("평일 하루 상한은 1~24시간으로 입력하거나 비워 두세요.");
   if (r.holidayCapMinutes !== null && !isInt(r.holidayCapMinutes, 60, 1440))
     errors.push("휴일 하루 상한은 1~24시간으로 입력하거나 비워 두세요.");
-  if (!isInt(r.monthlyLimitHours, 1, 744)) errors.push("월 한도를 1시간 이상으로 입력해 주세요.");
+  if (!isInt(r.minDailyMinutes, 0, 600)) errors.push("하루 최소 인정은 0~600분으로 입력해 주세요.");
+  if (!isInt(r.monthlyLimitHours, 1, 744)) errors.push("월 상한을 1시간 이상으로 입력해 주세요.");
+  if (!isInt(r.fixedMonthlyHours, 0, 744) || r.fixedMonthlyHours > r.monthlyLimitHours)
+    errors.push("기본 초과근무(정액분)는 월 상한보다 클 수 없어요.");
+  if (typeof r.monthlyRoundDown !== "boolean") errors.push("월 합계 버림 설정을 확인해 주세요.");
   if (!isInt(r.mealPrice, 1, 1_000_000)) errors.push("급량비 1개 금액을 입력해 주세요.");
   if (!isInt(r.mealMonthlyCap, 0, 100)) errors.push("급량비 한 달 최대는 0~100개로 입력해 주세요.");
   if (!isInt(r.weekdayMealMinutes, 1, 1440)) errors.push("평일 급량비 기준을 1분 이상으로 입력해 주세요.");

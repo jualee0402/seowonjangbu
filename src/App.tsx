@@ -716,9 +716,9 @@ function TodayStatus({
 /* ───────── 월 요약 ───────── */
 
 function SummaryPanel({ summary: s, rules }: { summary: MonthSummary; rules: Rules }) {
-  const limit = rules.monthlyLimitHours;
+  const otCap = s.overtimeCap;
   const cap = rules.mealMonthlyCap;
-  const otOver = s.overtimeHours > limit;
+  const otOver = s.overtimeHours > otCap;
   return (
     <div className="mt-3 rounded-2xl border bg-white p-4">
       <dl className="space-y-1 text-sm">
@@ -751,16 +751,12 @@ function SummaryPanel({ summary: s, rules }: { summary: MonthSummary; rules: Rul
       )}
       <div className="mt-4 grid grid-cols-2 gap-4 border-t pt-3.5">
         <Meter
-          label="초과근무"
-          limit={`한도 ${limit}시간`}
+          label="초과근무 실적"
+          limit={`최대 ${otCap}시간`}
           value={formatHours(s.overtimeHours)}
-          ratio={s.overtimeHours / limit}
+          ratio={otCap > 0 ? s.overtimeHours / otCap : 1}
           color={otOver ? "#d97706" : C.overtime}
-          note={
-            otOver
-              ? `한도 초과 ${formatHours(s.overtimeHours - limit)}`
-              : `한도까지 ${formatHours(limit - s.overtimeHours)}`
-          }
+          note={otOver ? `${otCap}시간까지만 인정돼요` : `${formatHours(otCap - s.overtimeHours)} 남음`}
           warn={otOver}
         />
         <Meter
@@ -775,6 +771,18 @@ function SummaryPanel({ summary: s, rules }: { summary: MonthSummary; rules: Rul
               : `평일 ${s.weekdayMeals} · 휴일 ${s.holidayMeals}`
           }
         />
+      </div>
+      <div className="mt-3.5 flex items-center justify-between gap-3 border-t border-dashed pt-2.5">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold">수당 시간</div>
+          <div className="text-[11px]" style={{ color: C.muted }}>
+            기본 {s.fixedHours}시간 + 실적 {formatHours(s.recognizedOvertimeHours)}
+            {rules.monthlyRoundDown ? " (분 단위 버림)" : ""}
+          </div>
+        </div>
+        <div className="shrink-0 text-xl font-bold tabular-nums" style={{ color: C.overtime }}>
+          {formatHours(s.allowanceHours)}
+        </div>
       </div>
     </div>
   );
@@ -960,8 +968,13 @@ function WorkList({
                             {c.rules.workStart}~{c.rules.workEnd} 안의 근무라 초과근무가 없어요.
                           </p>
                         )}
-                        {c.holiday && (
+                        {c.holiday && !c.belowMinimum && (
                           <p style={{ color: C.muted }}>휴일 근무는 근무시간 전체를 인정해요.</p>
+                        )}
+                        {c.belowMinimum && (
+                          <p style={{ color: "#b45309" }}>
+                            하루 초과근무가 {formatHours(c.rules.minDailyMinutes / 60)} 미만이라 인정하지 않아요.
+                          </p>
                         )}
                         {c.cappedAt !== null && (
                           <p style={{ color: "#b45309" }}>
@@ -1950,7 +1963,7 @@ function SettingsSheet({
       <SettingsRow title="휴일 설정" sub="임시공휴일 등 평일에 쉬는 날 지정" onClick={onOpenHoliday} />
       <SettingsRow
         title="계산 규칙"
-        sub={`평일 ${r.workStart}~${r.workEnd} · 공제 ${r.deductMinutes}분 · 급량비 ${formatWon(r.mealPrice)}`}
+        sub={`기본 ${r.fixedMonthlyHours}시간 · 실적 최대 ${Math.max(0, r.monthlyLimitHours - r.fixedMonthlyHours)}시간 · 급량비 ${formatWon(r.mealPrice)}`}
         onClick={onOpenRules}
       />
 
@@ -2246,6 +2259,9 @@ function RulesSheet({
           <RuleRow label="평일 공제" help="합친 초과근무에서 빼는 시간">
             <NumField label="평일 공제" value={sel.deductMinutes} onChange={(v) => patch({ deductMinutes: v ?? NaN })} unit="분" />
           </RuleRow>
+          <RuleRow label="하루 최소 인정" help="하루 초과근무가 이 시간 이상일 때만 인정 (평일은 공제 전 기준, 휴일 포함)">
+            <NumField label="하루 최소 인정" value={sel.minDailyMinutes} onChange={(v) => patch({ minDailyMinutes: v ?? NaN })} unit="분" />
+          </RuleRow>
           <RuleRow label="하루 상한 (평일)" help="비우면 상한 없음">
             <NumField
               label="평일 하루 상한"
@@ -2266,9 +2282,33 @@ function RulesSheet({
               placeholder="없음"
             />
           </RuleRow>
-          <RuleRow label="월 한도" help="요약 화면에 참고로만 보여 줘요">
-            <NumField label="월 한도" value={sel.monthlyLimitHours} onChange={(v) => patch({ monthlyLimitHours: v ?? NaN })} unit="시간" />
+          <RuleRow
+            label="월 상한 (기본 포함)"
+            help={
+              Number.isFinite(sel.monthlyLimitHours) && Number.isFinite(sel.fixedMonthlyHours)
+                ? `실적은 ${sel.monthlyLimitHours} − ${sel.fixedMonthlyHours} = ${Math.max(0, sel.monthlyLimitHours - sel.fixedMonthlyHours)}시간까지 인정`
+                : "기본 초과근무를 포함한 한 달 최대 시간"
+            }
+          >
+            <NumField label="월 상한" value={sel.monthlyLimitHours} onChange={(v) => patch({ monthlyLimitHours: v ?? NaN })} unit="시간" />
           </RuleRow>
+          <RuleRow label="기본 초과근무 (정액분)" help="기록과 상관없이 매달 기본으로 받는 시간">
+            <NumField label="기본 초과근무" value={sel.fixedMonthlyHours} onChange={(v) => patch({ fixedMonthlyHours: v ?? NaN })} unit="시간" />
+          </RuleRow>
+          <label className="flex items-center justify-between gap-3 px-3 py-2.5">
+            <span className="min-w-0">
+              <span className="block text-sm">월 합계 분 단위 버림</span>
+              <span className="mt-0.5 block text-[11px] leading-snug" style={{ color: C.muted }}>
+                한 달 실적 합계에서 1시간 미만은 버려요
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={sel.monthlyRoundDown}
+              onChange={(e) => patch({ monthlyRoundDown: e.target.checked })}
+              className="size-5 shrink-0 accent-[#1e3a8a]"
+            />
+          </label>
         </div>
       </div>
 
