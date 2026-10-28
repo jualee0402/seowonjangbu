@@ -18,6 +18,21 @@
   --accent: #f59e0b;
   --holiday: #dc2626;
   --saturday: #2563eb;
+  /* PC처럼 넓은 화면에서 앱 바깥 배경 */
+  --desk: #dde2ea;
+}
+
+/* 넓은 화면: 앱을 가운데 한 줄로 두고 바깥과 구분 */
+@media (min-width: 30rem) {
+  body {
+    background: var(--desk);
+  }
+
+  .app-column {
+    box-shadow:
+      0 0 0 1px rgba(15, 23, 42, 0.06),
+      0 12px 48px rgba(15, 23, 42, 0.12);
+  }
 }
 
 /* 요소 기본값은 base 레이어에 두어 Tailwind 유틸리티가 덮어쓸 수 있게 함 */

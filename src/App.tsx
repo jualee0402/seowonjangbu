@@ -120,7 +120,8 @@ const withJiman = (w: string) => w + (hasBatchim(w) ? "이지만" : "지만");
 
 /* ───────── 앱 ───────── */
 
-export default function App() {
+/** banner: 화면 맨 위(헤더 위)에 붙일 안내 띠. 시연용 화면에서만 사용 */
+export default function App({ banner }: { banner?: ReactNode }) {
   const [records, setRecords] = useState<WorkRecord[]>(() => loadList<WorkRecord>(RECORDS_KEY));
   const [ledger, setLedger] = useState<LedgerEntry[]>(() => loadList<LedgerEntry>(LEDGER_KEY));
   const [holidays, setHolidays] = useState<HolidayOverrides>(() => loadHolidayOverrides());
@@ -334,127 +335,130 @@ export default function App() {
   const isCurrent = viewMonth === currentMonth;
 
   return (
-    <div className="min-h-screen pb-20" style={{ background: "var(--bg)" }}>
-      <header className="sticky top-0 z-20 shadow-sm" style={{ background: C.navy, color: "white" }}>
-        <div className="mx-auto flex max-w-md items-center justify-between px-4 pt-4 pb-3">
-          <div>
-            <div className="text-[11px] opacity-80">서원동 주민센터</div>
-            <h1 className="text-[17px] leading-snug font-bold">초과근무 · 급량비 계산기</h1>
-          </div>
-          <button
-            onClick={() => setSheet("settings")}
-            className="rounded-lg px-3 py-2 text-xs font-medium transition active:scale-95"
-            style={{ background: "rgba(255,255,255,0.15)", color: "white" }}
-          >
-            설정
-          </button>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-md px-4">
-        {/* 입력: 오늘 */}
-        <TodayCard
-          now={now}
-          todayInfo={dayInfoOf(todayKey)}
-          openRecord={openRecord}
-          todayDone={todayDone}
-          onClockIn={clockIn}
-          onClockOut={clockOut}
-          onAddWork={() => setSheet("work")}
-          onAddMeal={() => setSheet("meal")}
-        />
-
-        {/* 보기: 월별 내역 */}
-        <section aria-label="월별 내역">
-          <div className="mt-7 flex items-center justify-between">
-            <div className="-ml-1.5 flex items-center">
-              <IconButton label="이전 달" onClick={() => setViewMonth(shiftMonth(viewMonth, -1))}>
-                <ChevronIcon dir="left" />
-              </IconButton>
-              <h2 className="px-0.5 text-[17px] font-bold tabular-nums">{monthTitle(viewMonth)}</h2>
-              <IconButton
-                label="다음 달"
-                disabled={viewMonth >= latestMonth}
-                onClick={() => setViewMonth(shiftMonth(viewMonth, 1))}
-              >
-                <ChevronIcon dir="right" />
-              </IconButton>
-              {!isCurrent && (
-                <button
-                  onClick={() => setViewMonth(currentMonth)}
-                  className="ml-0.5 rounded-md px-2 py-1 text-xs font-semibold"
-                  style={{ background: "var(--navy-soft)", color: C.navy }}
-                >
-                  이번 달
-                </button>
-              )}
+    <div className="min-h-screen" style={{ background: "var(--desk)" }}>
+      {/* 앱 화면: 휴대폰에서는 꽉 차고, PC처럼 넓은 화면에서는 가운데 한 줄로 */}
+      <div className="app-column relative mx-auto min-h-screen max-w-md pb-20" style={{ background: "var(--bg)" }}>
+        {banner}
+        <header className="sticky top-0 z-20 shadow-sm" style={{ background: C.navy, color: "white" }}>
+          <div className="flex items-center justify-between px-4 pt-4 pb-3">
+            <div>
+              <div className="text-[11px] opacity-80">서원동 주민센터</div>
+              <h1 className="text-[17px] leading-snug font-bold">초과근무 · 급량비 계산기</h1>
             </div>
             <button
-              onClick={openHolidaySheet}
-              className="flex items-center gap-1 rounded-lg border bg-white px-2.5 py-1.5 text-xs font-semibold"
-              style={{ color: C.navy }}
+              onClick={() => setSheet("settings")}
+              className="rounded-lg bg-white/15 px-3 py-2 text-xs font-medium text-white transition hover:bg-white/25 active:scale-95"
             >
-              <CalendarIcon />
-              휴일 설정
+              설정
             </button>
           </div>
+        </header>
 
-          <SummaryPanel summary={summary} />
+        <main className="px-4">
+          {/* 입력: 오늘 */}
+          <TodayCard
+            now={now}
+            todayInfo={dayInfoOf(todayKey)}
+            openRecord={openRecord}
+            todayDone={todayDone}
+            onClockIn={clockIn}
+            onClockOut={clockOut}
+            onAddWork={() => setSheet("work")}
+            onAddMeal={() => setSheet("meal")}
+          />
 
-          <div
-            role="tablist"
-            aria-label="내역 종류"
-            className="mt-5 grid grid-cols-2 rounded-xl p-1"
-            style={{ background: "#e5e7eb" }}
-          >
-            {(
-              [
-                ["work", "근무 내역", monthWorks.length],
-                ["meal", "식사 내역", monthMeals.length],
-              ] as const
-            ).map(([key, label, count]) => {
-              const active = listTab === key;
-              return (
-                <button
-                  key={key}
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => setListTab(key)}
-                  className="rounded-lg py-2 text-sm font-semibold transition"
-                  style={{
-                    background: active ? "white" : "transparent",
-                    color: active ? "var(--text)" : C.muted,
-                    boxShadow: active ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
-                  }}
+          {/* 보기: 월별 내역 */}
+          <section aria-label="월별 내역">
+            <div className="mt-7 flex items-center justify-between">
+              <div className="-ml-1.5 flex items-center">
+                <IconButton label="이전 달" onClick={() => setViewMonth(shiftMonth(viewMonth, -1))}>
+                  <ChevronIcon dir="left" />
+                </IconButton>
+                <h2 className="px-0.5 text-[17px] font-bold tabular-nums">{monthTitle(viewMonth)}</h2>
+                <IconButton
+                  label="다음 달"
+                  disabled={viewMonth >= latestMonth}
+                  onClick={() => setViewMonth(shiftMonth(viewMonth, 1))}
                 >
-                  {label}{" "}
-                  <span className="tabular-nums" style={{ color: active ? C.navy : C.faint }}>
-                    {count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+                  <ChevronIcon dir="right" />
+                </IconButton>
+                {!isCurrent && (
+                  <button
+                    onClick={() => setViewMonth(currentMonth)}
+                    className="ml-0.5 rounded-md px-2 py-1 text-xs font-semibold transition hover:brightness-95"
+                    style={{ background: "var(--navy-soft)", color: C.navy }}
+                  >
+                    이번 달
+                  </button>
+                )}
+              </div>
+              <button
+                onClick={openHolidaySheet}
+                className="flex items-center gap-1 rounded-lg border bg-white px-2.5 py-1.5 text-xs font-semibold transition hover:bg-gray-50"
+                style={{ color: C.navy }}
+              >
+                <CalendarIcon />
+                휴일 설정
+              </button>
+            </div>
 
-          {listTab === "work" ? (
-            <WorkList
-              key={`w-${viewMonth}`}
-              rows={monthWorks}
-              dayInfoOf={dayInfoOf}
-              monthLabel={monthShort(viewMonth)}
-              onDelete={deleteRecord}
-            />
-          ) : (
-            <MealList
-              key={`m-${viewMonth}`}
-              rows={monthMeals}
-              dayInfoOf={dayInfoOf}
-              monthLabel={monthShort(viewMonth)}
-              onDelete={deleteMeal}
-            />
-          )}
-        </section>
-      </main>
+            <SummaryPanel summary={summary} />
+
+            <div
+              role="tablist"
+              aria-label="내역 종류"
+              className="mt-5 grid grid-cols-2 rounded-xl p-1"
+              style={{ background: "#e5e7eb" }}
+            >
+              {(
+                [
+                  ["work", "근무 내역", monthWorks.length],
+                  ["meal", "식사 내역", monthMeals.length],
+                ] as const
+              ).map(([key, label, count]) => {
+                const active = listTab === key;
+                return (
+                  <button
+                    key={key}
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setListTab(key)}
+                    className="rounded-lg py-2 text-sm font-semibold transition"
+                    style={{
+                      background: active ? "white" : "transparent",
+                      color: active ? "var(--text)" : C.muted,
+                      boxShadow: active ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                    }}
+                  >
+                    {label}{" "}
+                    <span className="tabular-nums" style={{ color: active ? C.navy : C.faint }}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {listTab === "work" ? (
+              <WorkList
+                key={`w-${viewMonth}`}
+                rows={monthWorks}
+                dayInfoOf={dayInfoOf}
+                monthLabel={monthShort(viewMonth)}
+                onDelete={deleteRecord}
+              />
+            ) : (
+              <MealList
+                key={`m-${viewMonth}`}
+                rows={monthMeals}
+                dayInfoOf={dayInfoOf}
+                monthLabel={monthShort(viewMonth)}
+                onDelete={deleteMeal}
+              />
+            )}
+          </section>
+        </main>
+      </div>
 
       {sheet === "work" && (
         <WorkSheet
@@ -792,7 +796,7 @@ function WorkList({
                 <button
                   onClick={() => setOpenId(open ? null : c.record.id)}
                   aria-expanded={open}
-                  className={`${cols} w-full px-3 py-2 text-left transition active:bg-gray-50`}
+                  className={`${cols} w-full px-3 py-2 text-left transition hover:bg-gray-50 active:bg-gray-100`}
                   style={{ background: open ? "#f9fafb" : undefined }}
                 >
                   <DateCell dateKey={c.dateKey} info={info} show={firstOfDay} />
@@ -922,7 +926,7 @@ function MealList({
                 <button
                   onClick={() => setOpenId(open ? null : e.id)}
                   aria-expanded={open}
-                  className={`${cols} w-full px-3 py-2.5 text-left transition active:bg-gray-50`}
+                  className={`${cols} w-full px-3 py-2.5 text-left transition hover:bg-gray-50 active:bg-gray-100`}
                   style={{ background: open ? "#f9fafb" : undefined }}
                 >
                   {info ? (
@@ -978,7 +982,7 @@ function Detail({ children, onDelete }: { children: ReactNode; onDelete: () => v
       <div className="mt-2 flex justify-end">
         <button
           onClick={onDelete}
-          className="rounded-lg px-3 py-1.5 text-xs font-semibold"
+          className="rounded-lg px-3 py-1.5 text-xs font-semibold transition hover:brightness-95"
           style={{ background: "#fee2e2", color: "#b91c1c" }}
         >
           이 기록 삭제
@@ -1100,7 +1104,7 @@ function Sheet({
           </div>
           <button
             onClick={onClose}
-            className="shrink-0 rounded-lg px-3 py-1.5 text-sm"
+            className="shrink-0 rounded-lg px-3 py-1.5 text-sm transition hover:brightness-95"
             style={{ color: C.muted, background: "#f3f4f6" }}
           >
             닫기
@@ -1281,7 +1285,7 @@ function WorkSheet({
       <button
         onClick={submit}
         disabled={!!error}
-        className="w-full rounded-xl py-3.5 text-base font-bold text-white transition active:scale-[0.98] disabled:opacity-40"
+        className="w-full rounded-xl py-3.5 text-base font-bold text-white transition enabled:hover:brightness-125 active:scale-[0.98] disabled:opacity-40"
         style={{ background: C.navy }}
       >
         추가하기
@@ -1360,7 +1364,7 @@ function MealSheet({
           <button
             type="button"
             onClick={() => setAmount(String(MEAL_PRICE))}
-            className="rounded-full border px-2.5 py-0.5 text-xs font-semibold tabular-nums"
+            className="rounded-full border px-2.5 py-0.5 text-xs font-semibold tabular-nums transition hover:brightness-95"
             style={{ color: C.navy, borderColor: "var(--navy-line)", background: "var(--navy-soft)" }}
           >
             {MEAL_PRICE.toLocaleString("ko-KR")}원
@@ -1392,7 +1396,7 @@ function MealSheet({
       <button
         onClick={submit}
         disabled={!canSave}
-        className="w-full rounded-xl py-3.5 text-base font-bold text-white transition active:scale-[0.98] disabled:opacity-40"
+        className="w-full rounded-xl py-3.5 text-base font-bold text-white transition enabled:hover:brightness-125 active:scale-[0.98] disabled:opacity-40"
         style={{ background: isLedger ? C.navy : "#374151" }}
       >
         저장
@@ -1481,7 +1485,7 @@ function HolidaySheet({
                   </button>
                   <button
                     onClick={() => onSet(k, null)}
-                    className="shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold"
+                    className="shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold transition hover:brightness-95"
                     style={{ background: "#f3f4f6", color: "#4b5563" }}
                   >
                     {ov.on ? "해제" : "되돌리기"}
@@ -1562,9 +1566,9 @@ function MonthCalendar({
               onClick={() => onSelect(key)}
               aria-pressed={isSel}
               aria-label={`${m}월 ${d}일${info.name ? ` ${info.name}` : ""}`}
-              className="relative mx-0.5 flex h-12 flex-col items-center rounded-lg pt-1"
+              className="relative mx-0.5 flex h-12 flex-col items-center rounded-lg pt-1 transition hover:bg-gray-100"
               style={{
-                background: isSel ? "var(--navy-soft)" : custom ? "#fee2e2" : "transparent",
+                background: isSel ? "var(--navy-soft)" : custom ? "#fee2e2" : undefined,
                 boxShadow: isSel ? `inset 0 0 0 2px ${C.navy}` : undefined,
               }}
             >
@@ -1641,7 +1645,7 @@ function SelectedDayPanel({
         </p>
         <button
           onClick={() => onSet({ on: false })}
-          className="mt-2 rounded-lg border px-3 py-2 text-xs font-semibold"
+          className="mt-2 rounded-lg border px-3 py-2 text-xs font-semibold transition hover:brightness-95"
           style={{ color: "#4b5563", background: "white" }}
         >
           이 날은 평일로 계산하기
@@ -1656,7 +1660,7 @@ function SelectedDayPanel({
         </p>
         <button
           onClick={() => onSet(null)}
-          className="mt-2 rounded-lg border px-3 py-2 text-xs font-semibold"
+          className="mt-2 rounded-lg border px-3 py-2 text-xs font-semibold transition hover:brightness-95"
           style={{ color: "#4b5563", background: "white" }}
         >
           휴일 지정 해제
@@ -1671,7 +1675,7 @@ function SelectedDayPanel({
         </p>
         <button
           onClick={() => onSet(null)}
-          className="mt-2 rounded-lg border px-3 py-2 text-xs font-semibold"
+          className="mt-2 rounded-lg border px-3 py-2 text-xs font-semibold transition hover:brightness-95"
           style={{ color: C.holiday, background: "white" }}
         >
           다시 휴일로 계산하기
@@ -1689,7 +1693,7 @@ function SelectedDayPanel({
             <button
               key={name}
               onClick={() => onSet({ on: true, name })}
-              className="rounded-lg border py-2 text-xs font-semibold"
+              className="rounded-lg border py-2 text-xs font-semibold transition hover:brightness-95"
               style={{ color: C.holiday, borderColor: "#fecaca", background: "#fff5f5" }}
             >
               {name}
@@ -1731,7 +1735,7 @@ function SettingsSheet({
     <Sheet title="설정" onClose={onClose}>
       <button
         onClick={onOpenHoliday}
-        className="flex w-full items-center justify-between rounded-xl border px-4 py-3.5 text-left"
+        className="flex w-full items-center justify-between rounded-xl border px-4 py-3.5 text-left transition hover:bg-gray-50"
       >
         <span>
           <span className="block text-sm font-semibold">휴일 설정</span>
@@ -1769,21 +1773,21 @@ function SettingsSheet({
       </div>
       <button
         onClick={onResetRecords}
-        className="w-full rounded-xl py-3.5 text-sm font-semibold transition active:scale-[0.98]"
+        className="w-full rounded-xl py-3.5 text-sm font-semibold transition hover:brightness-95 active:scale-[0.98]"
         style={{ background: "#fef3c7", color: "#92400e" }}
       >
         근무 내역만 초기화
       </button>
       <button
         onClick={onResetLedger}
-        className="w-full rounded-xl py-3.5 text-sm font-semibold transition active:scale-[0.98]"
+        className="w-full rounded-xl py-3.5 text-sm font-semibold transition hover:brightness-95 active:scale-[0.98]"
         style={{ background: "#fef3c7", color: "#92400e" }}
       >
         식사 내역만 초기화
       </button>
       <button
         onClick={onResetAll}
-        className="w-full rounded-xl py-3.5 text-sm font-bold transition active:scale-[0.98]"
+        className="w-full rounded-xl py-3.5 text-sm font-bold transition hover:brightness-110 active:scale-[0.98]"
         style={{ background: C.danger, color: "white" }}
       >
         전체 데이터 초기화
@@ -1809,7 +1813,7 @@ function BigButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className="w-full rounded-xl py-4 text-[17px] font-bold transition active:scale-[0.98]"
+      className="w-full rounded-xl py-4 text-[17px] font-bold transition enabled:hover:brightness-110 enabled:active:scale-[0.98]"
       style={{
         background: disabled ? "#e5e7eb" : color,
         color: disabled ? C.faint : "white",
@@ -1824,7 +1828,7 @@ function SoftButton({ children, onClick }: { children: ReactNode; onClick: () =>
   return (
     <button
       onClick={onClick}
-      className="flex items-center justify-center gap-1 rounded-xl border py-3 text-sm font-semibold transition active:scale-[0.98]"
+      className="flex items-center justify-center gap-1 rounded-xl border py-3 text-sm font-semibold transition hover:brightness-[0.97] active:scale-[0.98]"
       style={{ background: "var(--navy-soft)", color: C.navy, borderColor: "var(--navy-line)" }}
     >
       <PlusIcon />
@@ -1849,7 +1853,7 @@ function IconButton({
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
-      className="grid size-9 place-items-center rounded-lg transition active:bg-gray-200 disabled:opacity-25"
+      className="grid size-9 place-items-center rounded-lg transition enabled:hover:bg-gray-200/60 enabled:active:bg-gray-200 disabled:opacity-25"
     >
       {children}
     </button>
