@@ -1,11 +1,14 @@
 /**
  * 초과근무·급량비 계산
  *
- * 평일 초과근무: 오전(09시 이전) + 오후(18시 이후) 합산 후 1시간 공제
+ * 평일 초과근무: 정규 시작 전 + 정규 종료 후 근무를 합산한 뒤 공제
  * 휴일 초과근무: 근무시간 전체 (토·일·공휴일·지정 휴일)
- * 1일 4시간 상한: 2026.10.1. 시행 「공무원수당 등에 관한 규정」 개정으로 폐지
- *   → 2026-09-30 이전 기록에는 당시 기준(4시간 상한)을 그대로 적용
+ * 하루 초과근무가 최소 인정 시간(기본 1시간)보다 짧으면 인정하지 않음
+ * 월 실적은 (월 상한 − 정액분)까지, 월 합계의 분 단위는 버림
+ * 정규 근무 시간, 공제, 하루 상한, 급량비 기준·단가 등은 시행 월별 규칙(rules.ts)을 따름
  */
+
+import type { Rules } from "./rules";
 
 export type WorkRecord = {
   id: string;
@@ -20,14 +23,6 @@ export type LedgerEntry = {
   memo?: string;
   type?: "ledger" | "personal";
 };
-
-export const MEAL_PRICE = 9000;
-export const MEAL_MONTHLY_CAP = 20;
-/** 월 초과근무 한도 (참고 표시용, 계산에는 적용하지 않음) */
-export const OVERTIME_MONTHLY_LIMIT = 57;
-const DEDUCTION_HOURS = 1;
-const OLD_DAILY_CAP_HOURS = 4;
-export const DAILY_CAP_REMOVED_FROM = "2026-10-01";
 
 const HOUR_MS = 1000 * 60 * 60;
 
@@ -48,9 +43,10 @@ export function shiftMonth(monthKey: string, delta: number) {
   return monthKeyOf(new Date(y, m - 1 + delta, 1));
 }
 
-/** 해당 날짜에 적용되는 1일 초과근무 상한 (시간) */
-export function dailyCapFor(dateKey: string) {
-  return dateKey < DAILY_CAP_REMOVED_FROM ? OLD_DAILY_CAP_HOURS : Infinity;
+/** "2026-10-31" + 1일 → "2026-11-01" */
+export function shiftDate(dateKey: string, delta: number) {
+  const [y, m, d] = dateKey.split("-").map(Number);
+  return dateKeyOf(new Date(y, m - 1, d + delta));
 }
 
 export type ComputedRecord = {
@@ -60,16 +56,20 @@ export type ComputedRecord = {
   start: Date;
   end: Date | null;
   holiday: boolean;
+  /** 이 기록에 적용된 규칙 */
+  rules: Rules;
   workedHours: number;
-  /** 평일: 09시 이전 근무 */
+  /** 평일: 정규 시작 전 근무 */
   morningHours: number;
-  /** 평일: 18시 이후 근무 */
+  /** 평일: 정규 종료 후 근무 */
   eveningHours: number;
-  /** 평일: 공제한 시간 (최대 1시간) */
+  /** 평일: 공제한 시간 */
   deductionHours: number;
   overtimeHours: number;
-  /** 2026년 9월 이전 기록에 4시간 상한이 적용됐는지 */
-  cappedByOldRule: boolean;
+  /** 하루 상한이 적용돼 줄어든 경우 그 상한(시간) */
+  cappedAt: number | null;
+  /** 하루 최소 인정 시간에 못 미쳐 인정하지 않은 경우 */
+  belowMinimum: boolean;
   meals: number;
 };
 
@@ -79,26 +79,39 @@ function overlapHours(startMs: number, endMs: number, winStart: number, winEnd: 
   return Math.max(0, (e - s) / HOUR_MS);
 }
 
+function atTime(day: Date, hhmm: string) {
+  const [h, m] = hhmm.split(":").map(Number);
+  return new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m).getTime();
+}
+
+/**
+ * @param isHoliday 날짜(YYYY-MM-DD)가 휴일인지
+ * @param rulesOf 그 달(YYYY-MM)에 시행 중인 규칙
+ */
 export function computeRecord(
   record: WorkRecord,
   isHoliday: (dateKey: string) => boolean,
+  rulesOf: (monthKey: string) => Rules,
 ): ComputedRecord {
   const start = new Date(record.clockIn);
   const end = record.clockOut ? new Date(record.clockOut) : null;
   const dateKey = dateKeyOf(start);
   const holiday = isHoliday(dateKey);
+  const rules = rulesOf(dateKey.slice(0, 7));
   const base: ComputedRecord = {
     record,
     dateKey,
     start,
     end,
     holiday,
+    rules,
     workedHours: 0,
     morningHours: 0,
     eveningHours: 0,
     deductionHours: 0,
     overtimeHours: 0,
-    cappedByOldRule: false,
+    cappedAt: null,
+    belowMinimum: false,
     meals: 0,
   };
   if (!end) return base;
@@ -106,36 +119,40 @@ export function computeRecord(
   if (ms <= 0) return base;
 
   const workedHours = ms / HOUR_MS;
-  const cap = dailyCapFor(dateKey);
+  const minimum = rules.minDailyMinutes / 60;
 
   if (holiday) {
+    const cap = rules.holidayCapMinutes === null ? Infinity : rules.holidayCapMinutes / 60;
+    const counted = workedHours >= minimum;
+    let meals = workedHours > rules.holidayMealMinutes / 60 ? 1 : 0;
+    if (rules.holidaySecondMealMinutes !== null && workedHours > rules.holidaySecondMealMinutes / 60) meals = 2;
     return {
       ...base,
       workedHours,
-      overtimeHours: Math.min(workedHours, cap),
-      cappedByOldRule: workedHours > cap,
-      // 휴일 급량비: 1시간 초과 근무 시 1개 (하루 최대 1개)
-      meals: workedHours > 1 ? 1 : 0,
+      overtimeHours: counted ? Math.min(workedHours, cap) : 0,
+      cappedAt: counted && workedHours > cap ? cap : null,
+      belowMinimum: !counted,
+      meals,
     };
   }
 
-  // 출근한 날을 기준으로 09:00 / 18:00 구간을 나눔
-  const nineAm = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 9).getTime();
-  const sixPm = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 18).getTime();
+  // 출근한 날을 기준으로 정규 시작 전 / 정규 종료 후 구간을 나눔
   const s = start.getTime();
   const e = end.getTime();
-  const morning = overlapHours(s, e, s, nineAm);
-  const evening = overlapHours(s, e, sixPm, e);
+  const morning = overlapHours(s, e, s, atTime(start, rules.workStart));
+  const evening = overlapHours(s, e, atTime(start, rules.workEnd), e);
   const eligible = morning + evening;
-  const deduction = Math.min(eligible, DEDUCTION_HOURS);
-  const afterDeduction = eligible - deduction;
+  const counted = eligible >= minimum;
+  const deduction = Math.min(eligible, rules.deductMinutes / 60);
+  const afterDeduction = counted ? eligible - deduction : 0;
+  const cap = rules.weekdayCapMinutes === null ? Infinity : rules.weekdayCapMinutes / 60;
 
-  // 평일 급량비 (공제 전 시간 기준):
-  // 오전 1시간 이상 → 1개, 오후 1시간 이상 → 1개, 둘 다 아니어도 합산 1시간 이상이면 1개
+  // 평일 급량비 (공제 전 시간 기준): 전·후 각각 기준 이상이면 1개씩, 둘 다 아니어도 합산 기준 이상이면 1개
+  const threshold = rules.weekdayMealMinutes / 60;
   let meals = 0;
-  if (morning >= 1) meals += 1;
-  if (evening >= 1) meals += 1;
-  if (meals === 0 && eligible >= 1) meals = 1;
+  if (morning >= threshold) meals += 1;
+  if (evening >= threshold) meals += 1;
+  if (meals === 0 && rules.weekdayMealCombined && eligible >= threshold) meals = 1;
 
   return {
     ...base,
@@ -144,18 +161,28 @@ export function computeRecord(
     eveningHours: evening,
     deductionHours: deduction,
     overtimeHours: Math.min(afterDeduction, cap),
-    cappedByOldRule: afterDeduction > cap,
-    meals: Math.min(meals, 2),
+    cappedAt: afterDeduction > cap ? cap : null,
+    belowMinimum: eligible > 0 && !counted,
+    meals: Math.min(meals, rules.weekdayMealMax),
   };
 }
 
 export type MonthSummary = {
+  /** 기록으로 계산한 초과근무 합계 (공제 후) */
   overtimeHours: number;
+  /** 실적으로 인정되는 최대 시간 (월 상한 − 정액분) */
+  overtimeCap: number;
+  /** 수당 실적으로 인정되는 시간 (분 단위 버림, 실적 최대 적용) */
+  recognizedOvertimeHours: number;
+  /** 기본 초과근무(정액분) */
+  fixedHours: number;
+  /** 이 달 수당 시간 = 정액분 + 인정 실적 */
+  allowanceHours: number;
   weekdayMeals: number;
   holidayMeals: number;
   /** 상한 적용 전 급량비 개수 */
   rawMeals: number;
-  /** 월 상한(20개) 적용 후 */
+  /** 월 상한 적용 후 */
   meals: number;
   mealCapped: boolean;
   mealAmount: number;
@@ -164,10 +191,12 @@ export type MonthSummary = {
   balance: number;
 };
 
+/** @param rules 그 달에 시행 중인 규칙 (급량비 단가·월 최대) */
 export function summarizeMonth(
   computed: ComputedRecord[],
   ledger: LedgerEntry[],
   monthKey: string,
+  rules: Rules,
 ): MonthSummary {
   let overtimeHours = 0;
   let weekdayMeals = 0;
@@ -179,8 +208,8 @@ export function summarizeMonth(
     else weekdayMeals += c.meals;
   }
   const rawMeals = weekdayMeals + holidayMeals;
-  const meals = Math.min(rawMeals, MEAL_MONTHLY_CAP);
-  const mealAmount = meals * MEAL_PRICE;
+  const meals = Math.min(rawMeals, rules.mealMonthlyCap);
+  const mealAmount = meals * rules.mealPrice;
   let ledgerSpent = 0;
   let personalSpent = 0;
   for (const e of ledger) {
@@ -189,13 +218,22 @@ export function summarizeMonth(
     if (e.type === "personal") personalSpent += amount;
     else ledgerSpent += amount;
   }
+  const overtimeCap = Math.max(0, rules.monthlyLimitHours - rules.fixedMonthlyHours);
+  // 분 단위 버림: 부동소수 오차를 피하려고 분으로 바꿔 계산
+  const totalMinutes = Math.round(overtimeHours * 60 * 1000) / 1000;
+  const counted = rules.monthlyRoundDown ? Math.floor(totalMinutes / 60) : totalMinutes / 60;
+  const recognizedOvertimeHours = Math.min(counted, overtimeCap);
   return {
     overtimeHours,
+    overtimeCap,
+    recognizedOvertimeHours,
+    fixedHours: rules.fixedMonthlyHours,
+    allowanceHours: rules.fixedMonthlyHours + recognizedOvertimeHours,
     weekdayMeals,
     holidayMeals,
     rawMeals,
     meals,
-    mealCapped: rawMeals >= MEAL_MONTHLY_CAP,
+    mealCapped: rawMeals >= rules.mealMonthlyCap,
     mealAmount,
     ledgerSpent,
     personalSpent,
