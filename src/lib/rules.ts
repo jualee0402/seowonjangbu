@@ -38,6 +38,16 @@ export type Rules = {
   holidayMealMinutes: number;
   /** 휴일: 근무가 이 시간(분)을 넘으면 2개. null = 사용 안 함 */
   holidaySecondMealMinutes: number | null;
+  /** 초과근무 운영시간 적용: 이 시간 밖 근무는 초과근무로 보지 않음 */
+  windowEnabled: boolean;
+  /** 평일 운영시간 (기본 06:00~23:00) */
+  weekdayWindowStart: string;
+  weekdayWindowEnd: string;
+  /** 휴일 운영시간 (기본 07:00~22:00) */
+  holidayWindowStart: string;
+  holidayWindowEnd: string;
+  /** 그 날 초과근무(운영시간 적용 전, 평일은 공제 전)가 이 시간(분) 이상이면 운영시간 밖도 인정 (국·소장 결재). null = 예외 없음 */
+  windowExemptMinutes: number | null;
 };
 
 export const RULES_KEY = "seowon_rules_v1";
@@ -61,17 +71,28 @@ const BASE: Omit<Rules, "from"> = {
   weekdayMealMax: 2,
   holidayMealMinutes: 60,
   holidaySecondMealMinutes: null,
+  windowEnabled: true,
+  weekdayWindowStart: "06:00",
+  weekdayWindowEnd: "23:00",
+  holidayWindowStart: "07:00",
+  holidayWindowEnd: "22:00",
+  windowExemptMinutes: 480,
 };
+
+/** 운영시간을 기본으로 적용하기 시작한 달 (그 전 기록은 예전 계산 그대로) */
+const WINDOW_FROM = "2026-10";
 
 /**
  * 기본 규칙
  * - 2026년 9월까지: 하루 초과근무 4시간 상한
  * - 2026년 10월부터: 상한 없음 (「지방공무원 수당 등에 관한 규정」 제15조 개정, 2026.10.1. 시행)
+ * - 2026년 10월부터: 초과근무 운영시간 적용 (평일 06~23시, 휴일 07~22시. 8시간 이상은 국·소장 결재로 예외)
+ *   (초과근무 제도개선 안내, 2026.10.2. 기준)
  * - 공통: 월 57시간 상한(정액분 10시간 포함 → 실적 최대 47시간), 1일 1시간 이상일 때만 인정,
  *   평일 1시간 공제·휴일 공제 없음, 월간 합산 시 분 단위 버림 (「지방공무원 보수업무 등 처리지침」)
  */
 export const DEFAULT_RULES: Rules[] = [
-  { from: FIRST_FROM, ...BASE, weekdayCapMinutes: 240, holidayCapMinutes: 240 },
+  { from: FIRST_FROM, ...BASE, weekdayCapMinutes: 240, holidayCapMinutes: 240, windowEnabled: false },
   { from: "2026-10", ...BASE },
 ];
 
@@ -99,6 +120,12 @@ function canonical(r: Rules): Rules {
     weekdayMealMax: r.weekdayMealMax,
     holidayMealMinutes: r.holidayMealMinutes,
     holidaySecondMealMinutes: r.holidaySecondMealMinutes,
+    windowEnabled: r.windowEnabled,
+    weekdayWindowStart: r.weekdayWindowStart,
+    weekdayWindowEnd: r.weekdayWindowEnd,
+    holidayWindowStart: r.holidayWindowStart,
+    holidayWindowEnd: r.holidayWindowEnd,
+    windowExemptMinutes: r.windowExemptMinutes,
   };
 }
 
@@ -152,6 +179,20 @@ export function validateRules(r: Rules): string[] {
   )
     errors.push("휴일 2개 기준은 1개 기준보다 길게 입력하거나 비워 두세요.");
   if (typeof r.weekdayMealCombined !== "boolean") errors.push("평일 합산 기준 설정을 확인해 주세요.");
+  if (typeof r.windowEnabled !== "boolean") errors.push("운영시간 적용 설정을 확인해 주세요.");
+  else if (r.windowEnabled) {
+    if (
+      !TIME.test(r.weekdayWindowStart) ||
+      !TIME.test(r.weekdayWindowEnd) ||
+      r.weekdayWindowStart > r.workStart ||
+      r.weekdayWindowEnd < r.workEnd
+    )
+      errors.push("평일 운영시간은 정규 근무 시간을 포함해야 해요.");
+    if (!TIME.test(r.holidayWindowStart) || !TIME.test(r.holidayWindowEnd) || r.holidayWindowStart >= r.holidayWindowEnd)
+      errors.push("휴일 운영시간은 시작이 종료보다 빨라야 해요.");
+    if (r.windowExemptMinutes !== null && !isInt(r.windowExemptMinutes, 60, 1440))
+      errors.push("운영시간 예외는 1~24시간으로 입력하거나 비워 두세요.");
+  }
   return errors;
 }
 
@@ -161,7 +202,10 @@ export function loadRules(): Rules[] {
     if (!raw) return DEFAULT_RULES;
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_RULES;
-    const list = sortRules(parsed.map((p) => canonical({ ...BASE, ...p } as Rules)));
+    // 예전에 저장한 규칙에는 운영시간 항목이 없음: 2026년 10월부터의 규칙에만 기본으로 적용
+    const list = sortRules(
+      parsed.map((p) => canonical({ ...BASE, windowEnabled: String(p?.from) >= WINDOW_FROM, ...p } as Rules)),
+    );
     const valid =
       list[0].from === FIRST_FROM &&
       list.every((r) => /^\d{4}-\d{2}$/.test(r.from) && validateRules(r).length === 0) &&

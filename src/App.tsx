@@ -920,13 +920,28 @@ function MealIcons({ count }: { count: number }) {
 function workBreakdown(c: ComputedRecord, info: DayInfo): [string, string][] {
   if (c.holiday) {
     const name = info.name ?? (info.kind === "weekend" ? `${DOW[info.dow]}요일` : "휴일");
-    return [[`${name} 근무`, formatHours(c.workedHours)]];
+    return [[`${name} 근무`, formatHours(c.eligibleHours)]];
   }
   const rows: [string, string][] = [];
   if (c.morningHours > 0) rows.push([`${c.rules.workStart} 전`, formatHours(c.morningHours)]);
   if (c.eveningHours > 0) rows.push([`${c.rules.workEnd} 후`, formatHours(c.eveningHours)]);
   if (c.deductionHours > 0) rows.push(["공제", `− ${formatHours(c.deductionHours)}`]);
   return rows;
+}
+
+/** 운영시간 안내 한 줄: 운영시간 밖이라 뺀 시간, 또는 8시간 이상이라 인정한 경우 */
+function windowNote(c: ComputedRecord): { text: string; warn: boolean } | null {
+  const r = c.rules;
+  if (Math.round(c.outsideHours * 60) >= 1) {
+    const range = c.holiday
+      ? `${r.holidayWindowStart}~${r.holidayWindowEnd}`
+      : `${r.weekdayWindowStart}~${r.weekdayWindowEnd}`;
+    return { text: `운영시간(${range}) 밖 ${formatHours(c.outsideHours)} 제외`, warn: true };
+  }
+  if (c.windowExempt && r.windowExemptMinutes !== null) {
+    return { text: `${formatHours(r.windowExemptMinutes / 60)} 이상이라 운영시간 밖도 인정 (국·소장 결재)`, warn: false };
+  }
+  return null;
 }
 
 function WorkList({
@@ -1022,6 +1037,10 @@ function WorkList({
                     {c.cappedAt !== null && (
                       <p style={{ color: C.warn }}>하루 상한 {formatHours(c.cappedAt)}까지만 인정돼요.</p>
                     )}
+                    {(() => {
+                      const note = windowNote(c);
+                      return note && <p style={{ color: note.warn ? C.warn : C.muted }}>{note.text}</p>;
+                    })()}
                   </>
                 ) : (
                   <p style={{ color: C.muted }}>퇴근 전이에요.</p>
@@ -1340,6 +1359,7 @@ function WorkSheet({
           (m) => rulesFor(rules, m),
         )
       : null;
+  const previewNote = preview ? windowNote(preview) : null;
 
   function changeDate(v: string) {
     setDate(v);
@@ -1462,6 +1482,14 @@ function WorkSheet({
                 초과근무 <b style={{ color: C.overtime }}>{formatHours(preview.overtimeHours)}</b>
                 <span style={{ color: C.faint }}> · </span>
                 급량비 <b style={{ color: C.meal }}>{preview.meals}개</b>
+                {previewNote && (
+                  <span
+                    className="mt-0.5 block text-[12px]"
+                    style={{ color: previewNote.warn ? C.warn : C.muted }}
+                  >
+                    {previewNote.text}
+                  </span>
+                )}
               </>
             )
           ))}
@@ -1992,6 +2020,58 @@ function RuleRow({ label, help, children }: { label: string; help?: string; chil
   );
 }
 
+/** 시작~종료 시각 두 칸 (정규 근무, 운영시간) */
+function TimeRangeRow({
+  label,
+  help,
+  start,
+  end,
+  onStart,
+  onEnd,
+  startLabel,
+  endLabel,
+}: {
+  label: string;
+  help?: string;
+  start: string;
+  end: string;
+  onStart: (v: string) => void;
+  onEnd: (v: string) => void;
+  startLabel: string;
+  endLabel: string;
+}) {
+  const input = "w-full min-w-0 rounded-lg border px-2.5 py-2 text-sm tabular-nums";
+  return (
+    <div className="px-3.5 py-2.5">
+      <div className="text-[14px]">{label}</div>
+      {help && (
+        <div className="mt-0.5 text-[12px] leading-snug" style={{ color: C.muted }}>
+          {help}
+        </div>
+      )}
+      <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+        <input
+          type="time"
+          aria-label={startLabel}
+          value={start}
+          onChange={(e) => onStart(e.target.value)}
+          className={input}
+          style={{ background: "#f8fafc" }}
+        />
+        <span style={{ color: C.muted }}>~</span>
+        <input
+          type="time"
+          aria-label={endLabel}
+          value={end}
+          onChange={(e) => onEnd(e.target.value)}
+          className={input}
+          style={{ background: "#f8fafc" }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function RuleCheck({
   label,
   help,
@@ -2191,33 +2271,57 @@ function RulesSheet({
           초과근무
         </div>
         <div className={group}>
-          <div className="px-3.5 py-2.5">
-            <div className="text-[14px]">평일 정규 근무</div>
-            {showHelp && (
-              <div className="mt-0.5 text-[12px] leading-snug" style={{ color: C.muted }}>
-                이 시간 전과 후의 근무가 초과근무예요
-              </div>
-            )}
-            <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-              <input
-                type="time"
-                aria-label="정규 근무 시작"
-                value={sel.workStart}
-                onChange={(e) => patch({ workStart: e.target.value })}
-                className="w-full min-w-0 rounded-lg border px-2.5 py-2 text-sm tabular-nums"
-                style={{ background: "#f8fafc" }}
+          <TimeRangeRow
+            label="평일 정규 근무"
+            help={help("이 시간 전과 후의 근무가 초과근무예요")}
+            start={sel.workStart}
+            end={sel.workEnd}
+            onStart={(v) => patch({ workStart: v })}
+            onEnd={(v) => patch({ workEnd: v })}
+            startLabel="정규 근무 시작"
+            endLabel="정규 근무 종료"
+          />
+          <RuleCheck
+            label="운영시간 적용"
+            help={help("운영시간 밖 근무는 초과근무로 치지 않아요")}
+            checked={sel.windowEnabled}
+            onChange={(v) => patch({ windowEnabled: v })}
+          />
+          {sel.windowEnabled && (
+            <>
+              <TimeRangeRow
+                label="평일 운영시간"
+                start={sel.weekdayWindowStart}
+                end={sel.weekdayWindowEnd}
+                onStart={(v) => patch({ weekdayWindowStart: v })}
+                onEnd={(v) => patch({ weekdayWindowEnd: v })}
+                startLabel="평일 운영 시작"
+                endLabel="평일 운영 종료"
               />
-              <span style={{ color: C.muted }}>~</span>
-              <input
-                type="time"
-                aria-label="정규 근무 종료"
-                value={sel.workEnd}
-                onChange={(e) => patch({ workEnd: e.target.value })}
-                className="w-full min-w-0 rounded-lg border px-2.5 py-2 text-sm tabular-nums"
-                style={{ background: "#f8fafc" }}
+              <TimeRangeRow
+                label="휴일 운영시간"
+                start={sel.holidayWindowStart}
+                end={sel.holidayWindowEnd}
+                onStart={(v) => patch({ holidayWindowStart: v })}
+                onEnd={(v) => patch({ holidayWindowEnd: v })}
+                startLabel="휴일 운영 시작"
+                endLabel="휴일 운영 종료"
               />
-            </div>
-          </div>
+              <RuleRow
+                label="운영시간 예외 기준"
+                help={help("그 날 초과근무(공제 전)가 이 시간 이상이면 운영시간 밖도 인정 (국·소장 결재). 비우면 예외 없음")}
+              >
+                <NumField
+                  label="운영시간 예외 기준"
+                  value={minutesToHours(sel.windowExemptMinutes)}
+                  onChange={(v) => patch({ windowExemptMinutes: hoursToMinutes(v) })}
+                  unit="시간"
+                  nullable
+                  placeholder="없음"
+                />
+              </RuleRow>
+            </>
+          )}
           <RuleRow label="평일 공제" help={help("평일 초과근무에서 빼는 시간")}>
             <NumField label="평일 공제" value={sel.deductMinutes} onChange={(v) => patch({ deductMinutes: v ?? NaN })} unit="분" />
           </RuleRow>

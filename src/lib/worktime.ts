@@ -4,6 +4,7 @@
  * 평일 초과근무: 정규 시작 전 + 정규 종료 후 근무를 합산한 뒤 공제
  * 휴일 초과근무: 근무시간 전체 (토·일·공휴일·지정 휴일)
  * 하루 초과근무가 최소 인정 시간(기본 1시간)보다 짧으면 인정하지 않음
+ * 운영시간(평일 06~23시, 휴일 07~22시) 밖 근무는 빼고 계산. 단 그 날 초과근무가 8시간 이상이면(국·소장 결재) 예외
  * 월 실적은 (월 상한 − 정액분)까지, 월 합계의 분 단위는 버림
  * 정규 근무 시간, 공제, 하루 상한, 급량비 기준·단가 등은 시행 월별 규칙(rules.ts)을 따름
  */
@@ -71,6 +72,12 @@ export type ComputedRecord = {
   /** 하루 최소 인정 시간에 못 미쳐 인정하지 않은 경우 */
   belowMinimum: boolean;
   meals: number;
+  /** 초과근무로 보는 시간 (운영시간 적용 후, 공제 전). 평일 = 전 + 후, 휴일 = 근무 시간 */
+  eligibleHours: number;
+  /** 운영시간 밖이라 뺀 시간 (예외로 인정했으면 0) */
+  outsideHours: number;
+  /** 운영시간 밖 근무가 있었지만 8시간 이상(국·소장 결재)이라 인정한 경우 */
+  windowExempt: boolean;
 };
 
 function overlapHours(startMs: number, endMs: number, winStart: number, winEnd: number) {
@@ -113,6 +120,9 @@ export function computeRecord(
     cappedAt: null,
     belowMinimum: false,
     meals: 0,
+    eligibleHours: 0,
+    outsideHours: 0,
+    windowExempt: false,
   };
   if (!end) return base;
   const ms = end.getTime() - start.getTime();
@@ -120,27 +130,53 @@ export function computeRecord(
 
   const workedHours = ms / HOUR_MS;
   const minimum = rules.minDailyMinutes / 60;
+  const s = start.getTime();
+  const e = end.getTime();
+  /** 운영시간 예외: 그 날 초과근무(운영시간 적용 전)가 기준 이상이면 운영시간 밖도 인정 */
+  const exemptByLength = (raw: number) =>
+    rules.windowExemptMinutes !== null && raw >= rules.windowExemptMinutes / 60;
 
   if (holiday) {
+    // 운영시간은 출근한 날 기준 (기본 07:00~22:00)
+    const windowed = rules.windowEnabled
+      ? overlapHours(s, e, atTime(start, rules.holidayWindowStart), atTime(start, rules.holidayWindowEnd))
+      : workedHours;
+    const outside = workedHours - windowed;
+    const exempt = outside > 1e-9 && exemptByLength(workedHours);
+    const hours = exempt ? workedHours : windowed;
     const cap = rules.holidayCapMinutes === null ? Infinity : rules.holidayCapMinutes / 60;
-    const counted = workedHours >= minimum;
-    let meals = workedHours > rules.holidayMealMinutes / 60 ? 1 : 0;
-    if (rules.holidaySecondMealMinutes !== null && workedHours > rules.holidaySecondMealMinutes / 60) meals = 2;
+    const counted = hours >= minimum;
+    let meals = hours > rules.holidayMealMinutes / 60 ? 1 : 0;
+    if (rules.holidaySecondMealMinutes !== null && hours > rules.holidaySecondMealMinutes / 60) meals = 2;
     return {
       ...base,
       workedHours,
-      overtimeHours: counted ? Math.min(workedHours, cap) : 0,
-      cappedAt: counted && workedHours > cap ? cap : null,
-      belowMinimum: !counted,
+      eligibleHours: hours,
+      outsideHours: exempt ? 0 : outside,
+      windowExempt: exempt,
+      overtimeHours: counted ? Math.min(hours, cap) : 0,
+      cappedAt: counted && hours > cap ? cap : null,
+      belowMinimum: hours > 0 && !counted,
       meals,
     };
   }
 
   // 출근한 날을 기준으로 정규 시작 전 / 정규 종료 후 구간을 나눔
-  const s = start.getTime();
-  const e = end.getTime();
-  const morning = overlapHours(s, e, s, atTime(start, rules.workStart));
-  const evening = overlapHours(s, e, atTime(start, rules.workEnd), e);
+  const workStart = atTime(start, rules.workStart);
+  const workEnd = atTime(start, rules.workEnd);
+  const rawMorning = overlapHours(s, e, s, workStart);
+  const rawEvening = overlapHours(s, e, workEnd, e);
+  // 운영시간(기본 06:00~23:00) 안쪽만
+  const winMorning = rules.windowEnabled
+    ? overlapHours(s, e, atTime(start, rules.weekdayWindowStart), workStart)
+    : rawMorning;
+  const winEvening = rules.windowEnabled
+    ? overlapHours(s, e, workEnd, atTime(start, rules.weekdayWindowEnd))
+    : rawEvening;
+  const outside = rawMorning + rawEvening - (winMorning + winEvening);
+  const exempt = outside > 1e-9 && exemptByLength(rawMorning + rawEvening);
+  const morning = exempt ? rawMorning : winMorning;
+  const evening = exempt ? rawEvening : winEvening;
   const eligible = morning + evening;
   const counted = eligible >= minimum;
   const deduction = Math.min(eligible, rules.deductMinutes / 60);
@@ -164,6 +200,9 @@ export function computeRecord(
     cappedAt: afterDeduction > cap ? cap : null,
     belowMinimum: eligible > 0 && !counted,
     meals: Math.min(meals, rules.weekdayMealMax),
+    eligibleHours: eligible,
+    outsideHours: exempt ? 0 : Math.max(0, outside),
+    windowExempt: exempt,
   };
 }
 
