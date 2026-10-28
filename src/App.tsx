@@ -1010,14 +1010,17 @@ function MealList({
                 <span className="text-xs">{e.date}</span>
               )}
               <span className="flex min-w-0 items-center gap-1.5">
-                {personal && (
-                  <span
-                    className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
-                    style={{ background: C.soft, color: C.muted }}
-                  >
-                    내돈내산
-                  </span>
-                )}
+                {/* 장부 사용(잔액에서 빠짐)은 남색, 내돈내산(잔액 제외)은 회색 */}
+                <span
+                  className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
+                  style={
+                    personal
+                      ? { background: C.soft, color: C.muted }
+                      : { background: "var(--navy-soft)", color: C.navy }
+                  }
+                >
+                  {personal ? "내돈내산" : "장부 사용"}
+                </span>
                 <span className="truncate text-[15px]">{e.memo ?? ""}</span>
               </span>
               <span
