@@ -246,8 +246,17 @@ export default function App({ banner }: { banner?: ReactNode }) {
     });
   }
 
+  /** 그 날(출근한 날 기준)의 근무 기록. 하루에 하나만 등록 */
+  function recordOn(dateKey: string, exceptId?: string) {
+    return records.find((r) => r.id !== exceptId && dateKeyOf(new Date(r.clockIn)) === dateKey) ?? null;
+  }
+
   function clockIn() {
     const t = new Date();
+    if (recordOn(dateKeyOf(t))) {
+      setToast("오늘 근무는 이미 기록했어요");
+      return false;
+    }
     commitRecords([...records, { id: uid(), clockIn: t.toISOString(), clockOut: null }]);
     setToast(`출근 ${formatTime(t)}`);
     return true;
@@ -429,7 +438,9 @@ export default function App({ banner }: { banner?: ReactNode }) {
           todayInfo={dayInfoOf(todayKey)}
           openRecord={openRecord}
           todayDone={todayDone}
+          doneToday={!openRecord && !!recordOn(todayKey)}
           onClock={toggleClock}
+          onDone={() => setToast("오늘 근무는 이미 기록했어요")}
           onAddWork={() => openWorkSheet(null)}
           onAddMeal={() => openMealSheet(null)}
         />
@@ -503,11 +514,14 @@ export default function App({ banner }: { banner?: ReactNode }) {
 
       {sheet === "work" && (
         <WorkSheet
+          key={editingWork?.id ?? "new"}
           record={editingWork}
           isOpenRecord={!!editingWork && editingWork.id === openRecord?.id}
           todayKey={todayKey}
           holidays={holidays}
           rules={rules}
+          existingOn={(k) => recordOn(k, editingWork?.id)}
+          onEditExisting={openWorkSheet}
           onClose={() => setSheet(null)}
           onSubmit={saveWork}
         />
@@ -583,7 +597,9 @@ function TodayPanel({
   todayInfo,
   openRecord,
   todayDone,
+  doneToday,
   onClock,
+  onDone,
   onAddWork,
   onAddMeal,
 }: {
@@ -591,7 +607,10 @@ function TodayPanel({
   todayInfo: DayInfo;
   openRecord: WorkRecord | null;
   todayDone: ComputedRecord[];
+  /** 오늘 근무를 이미 기록함 (하루에 한 번만) */
+  doneToday: boolean;
   onClock: () => void;
+  onDone: () => void;
   onAddWork: () => void;
   onAddMeal: () => void;
 }) {
@@ -619,14 +638,25 @@ function TodayPanel({
           {pad(now.getHours())}:{pad(now.getMinutes())}
         </div>
       </div>
-      <button
-        onClick={onClock}
-        className="mt-4 flex h-14 w-full items-center justify-center gap-2 rounded-2xl text-[18px] font-bold transition hover:brightness-105 active:scale-[0.98]"
-        style={working ? { background: C.moon, color: C.navy } : { background: "white", color: C.navy }}
-      >
-        {working ? <MoonIcon /> : <SunIcon />}
-        {working ? "퇴근" : "출근"}
-      </button>
+      {doneToday ? (
+        <button
+          onClick={onDone}
+          aria-disabled="true"
+          className="mt-4 flex h-14 w-full cursor-default items-center justify-center gap-2 rounded-2xl bg-white/10 text-[18px] font-bold text-white/60"
+        >
+          <CheckIcon />
+          퇴근 완료
+        </button>
+      ) : (
+        <button
+          onClick={onClock}
+          className="mt-4 flex h-14 w-full items-center justify-center gap-2 rounded-2xl text-[18px] font-bold transition hover:brightness-105 active:scale-[0.98]"
+          style={working ? { background: C.moon, color: C.navy } : { background: "white", color: C.navy }}
+        >
+          {working ? <MoonIcon /> : <SunIcon />}
+          {working ? "퇴근" : "출근"}
+        </button>
+      )}
       <div className="mt-2.5 grid grid-cols-2 gap-2.5">
         <GhostButton onClick={onAddWork}>근무 입력</GhostButton>
         <GhostButton onClick={onAddMeal}>식사 입력</GhostButton>
@@ -909,7 +939,17 @@ function WorkList({
               aria-expanded={open}
               className={`${cols} w-full px-3.5 py-3 text-left transition hover:bg-slate-50 active:bg-slate-100`}
             >
-              <DateCell dateKey={c.dateKey} info={info} show={firstOfDay} />
+              {firstOfDay ? (
+                <DateCell dateKey={c.dateKey} info={info} show />
+              ) : (
+                // 하루 한 번만 등록하도록 바뀌기 전에 같은 날 두 번 이상 찍힌 기록
+                <span
+                  className="justify-self-start rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
+                  style={{ background: "#fef3c7", color: "#92400e" }}
+                >
+                  중복
+                </span>
+              )}
               <span className="min-w-0 text-[15px] tabular-nums">
                 {formatTime(c.start)} – {c.end ? formatTime(c.end) : ""}
                 {nextDay && (
@@ -1215,6 +1255,8 @@ function WorkSheet({
   todayKey,
   holidays,
   rules,
+  existingOn,
+  onEditExisting,
   onClose,
   onSubmit,
 }: {
@@ -1225,6 +1267,10 @@ function WorkSheet({
   todayKey: string;
   holidays: HolidayOverrides;
   rules: Rules[];
+  /** 그 날 이미 있는 다른 근무 기록 (하루에 하나만 등록) */
+  existingOn: (dateKey: string) => WorkRecord | null;
+  /** 이미 있는 기록을 고치러 가기 */
+  onEditExisting: (record: WorkRecord) => void;
   onClose: () => void;
   onSubmit: (input: WorkInput) => void;
 }) {
@@ -1252,9 +1298,12 @@ function WorkSheet({
   const inIso = validDate ? combineDateTime(date, inTime) : null;
   const outIso =
     validDate && !working ? combineDateTime(nextDay ? shiftDate(date, 1) : date, outTime) : null;
+  const existing = validDate ? existingOn(date) : null;
   const error = !validDate
     ? "날짜를 선택해 주세요."
-    : !inIso || (!working && !outIso)
+    : existing
+      ? "이 날은 이미 근무 기록이 있어요."
+      : !inIso || (!working && !outIso)
       ? "시간을 확인해 주세요."
       : working && new Date(inIso).getTime() > Date.now()
         ? "출근 시간이 지금보다 늦어요."
@@ -1366,10 +1415,24 @@ function WorkSheet({
         </div>
       )}
       <div
-        className="rounded-xl px-3.5 py-3 text-[14px]"
+        className="flex items-center justify-between gap-2 rounded-xl px-3.5 py-3 text-[14px]"
         style={error ? { background: "#fef2f2", color: "#b91c1c" } : { background: C.soft }}
       >
-        {error ??
+        {existing && !editing ? (
+          <>
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => onEditExisting(existing)}
+              className="-my-1 shrink-0 rounded-lg bg-white px-3 py-1.5 text-[13px] font-semibold transition hover:brightness-95"
+              style={{ color: "#b91c1c" }}
+            >
+              그 기록 수정
+            </button>
+          </>
+        ) : (
+          <span>
+            {error ??
           (working ? (
             <span style={{ color: C.muted }}>퇴근하면 계산돼요.</span>
           ) : (
@@ -1381,6 +1444,8 @@ function WorkSheet({
               </>
             )
           ))}
+          </span>
+        )}
       </div>
       <PrimaryButton onClick={submit} disabled={!!error}>
         저장
@@ -2393,6 +2458,14 @@ function GearIcon() {
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" aria-hidden="true">
       <path d="M10.27 4.8 10.35 2.54 13.65 2.54 13.73 4.8 15.87 5.69 17.52 4.15 19.85 6.48 18.31 8.13 19.2 10.27 21.46 10.35 21.46 13.65 19.2 13.73 18.31 15.87 19.85 17.52 17.52 19.85 15.87 18.31 13.73 19.2 13.65 21.46 10.35 21.46 10.27 19.2 8.13 18.31 6.48 19.85 4.15 17.52 5.69 15.87 4.8 13.73 2.54 13.65 2.54 10.35 4.8 10.27 5.69 8.13 4.15 6.48 6.48 4.15 8.13 5.69Z" />
       <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 12.5l4.5 4.5L19 7.5" />
     </svg>
   );
 }
