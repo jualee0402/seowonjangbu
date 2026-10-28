@@ -701,35 +701,32 @@ function SummaryPanel({ summary: s, rules }: { summary: MonthSummary; rules: Rul
         aria-expanded={open}
         className="block w-full px-4 pt-4 pb-1 text-left"
       >
-        <span className="grid grid-cols-2 gap-4">
-          <Stat
-            icon={
-              <span style={{ color: C.overtime }}>
-                <MoonIcon size={13} />
-              </span>
-            }
-            label="수당 시간"
-            value={formatHours(s.allowanceHours)}
-            color={C.overtime}
+        {/* 위: 한도까지 얼마나 찼는지 */}
+        <span className="grid grid-cols-2 gap-5">
+          <Meter
+            icon={<MoonIcon size={13} />}
+            label="초과근무 실적"
+            value={formatHours(s.overtimeHours)}
             ratio={otCap > 0 ? s.overtimeHours / otCap : 1}
-            barColor={otOver ? "#d97706" : C.overtime}
-            caption={otOver ? `실적 최대 ${otCap}시간` : `실적 ${formatHours(s.overtimeHours)}`}
-            warn={otOver}
+            max={`최대 ${otCap}시간`}
+            color={C.overtime}
+            over={otOver}
           />
-          <Stat
-            icon={
-              <span style={{ color: C.meal }}>
-                <BowlIcon size={14} />
-              </span>
-            }
-            label="잔액"
-            value={formatWon(s.balance)}
-            color={s.balance >= 0 ? C.meal : C.danger}
+          <Meter
+            icon={<BowlIcon size={14} />}
+            label="급량비"
+            value={`${s.rawMeals}개`}
             ratio={mealCap > 0 ? s.rawMeals / mealCap : 0}
-            barColor={C.meal}
-            caption={mealOver ? `급량비 최대 ${mealCap}개` : `급량비 ${s.meals}개`}
-            warn={mealOver}
+            max={`최대 ${mealCap}개`}
+            color={C.meal}
+            over={mealOver}
           />
+        </span>
+        {/* 아래: 받는 것과 쓴 것 */}
+        <span className="mt-3.5 grid grid-cols-3 gap-2 border-t pt-3">
+          <Figure label="수당 시간" value={formatHours(s.allowanceHours)} color={C.overtime} />
+          <Figure label="장부 사용" value={formatWon(s.ledgerSpent)} />
+          <Figure label="잔액" value={formatWon(s.balance)} color={s.balance >= 0 ? C.meal : C.danger} />
         </span>
         <span className="mt-1 flex justify-center" style={{ color: "#cbd5e1" }}>
           <ChevronIcon dir={open ? "up" : "down"} size={18} />
@@ -740,48 +737,63 @@ function SummaryPanel({ summary: s, rules }: { summary: MonthSummary; rules: Rul
   );
 }
 
-function Stat({
+/** 이번 달 실적·개수와 한도 막대 (한도를 넘으면 주황) */
+function Meter({
   icon,
   label,
   value,
-  color,
   ratio,
-  barColor,
-  caption,
-  warn,
+  max,
+  color,
+  over,
 }: {
   icon: ReactNode;
   label: string;
   value: string;
-  color: string;
   ratio: number;
-  barColor: string;
-  caption: string;
-  warn?: boolean;
+  max: string;
+  color: string;
+  over: boolean;
 }) {
   return (
     <span className="block min-w-0">
       <span className="flex items-center gap-1 text-[13px] font-medium" style={{ color: C.muted }}>
-        {icon}
+        <span style={{ color }}>{icon}</span>
         {label}
       </span>
       <span
-        className="mt-0.5 block text-[clamp(20px,6.4vw,26px)] leading-tight font-bold tracking-[-0.015em] whitespace-nowrap tabular-nums"
-        style={{ color }}
+        className="mt-0.5 block text-[clamp(19px,5.9vw,24px)] leading-tight font-bold tracking-[-0.015em] whitespace-nowrap tabular-nums"
+        style={{ color: over ? C.warn : color }}
       >
         {value}
       </span>
-      <span className="mt-2.5 block h-1.5 overflow-hidden rounded-full" style={{ background: C.soft }}>
+      <span className="mt-2 block h-1.5 overflow-hidden rounded-full" style={{ background: C.soft }}>
         <span
           className="block h-full rounded-full"
-          style={{ width: `${Math.min(100, Math.max(0, ratio * 100))}%`, background: barColor }}
+          style={{ width: `${Math.min(100, Math.max(0, ratio * 100))}%`, background: over ? "#d97706" : color }}
         />
       </span>
       <span
-        className="mt-1.5 block text-[12px] whitespace-nowrap tabular-nums"
-        style={{ color: warn ? C.warn : C.muted }}
+        className="mt-1 block text-right text-[12px] whitespace-nowrap tabular-nums"
+        style={{ color: over ? C.warn : C.muted }}
       >
-        {caption}
+        {max}
+      </span>
+    </span>
+  );
+}
+
+function Figure({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <span className="block min-w-0">
+      <span className="block text-[12px]" style={{ color: C.muted }}>
+        {label}
+      </span>
+      <span
+        className="mt-0.5 block text-[clamp(15px,4.6vw,18px)] font-bold whitespace-nowrap tabular-nums"
+        style={{ color: color ?? "var(--text)" }}
+      >
+        {value}
       </span>
     </span>
   );
@@ -791,9 +803,7 @@ function Stat({
 function SummaryBreakdown({ summary: s }: { summary: MonthSummary }) {
   const rows: [string, string][] = [
     ["수당 시간", `기본 ${s.fixedHours}시간 + 실적 ${formatHours(s.recognizedOvertimeHours)}`],
-    ["초과근무 실적", `${formatHours(s.overtimeHours)} / ${s.overtimeCap}시간`],
     [`급량비 ${s.meals}개`, formatWon(s.mealAmount)],
-    ["장부 사용", s.ledgerSpent > 0 ? `− ${formatWon(s.ledgerSpent)}` : formatWon(0)],
   ];
   if (s.personalSpent > 0) rows.push(["내돈내산 (잔액 제외)", formatWon(s.personalSpent)]);
   return (
