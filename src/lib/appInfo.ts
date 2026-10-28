@@ -4,7 +4,7 @@
  */
 export const APP_INFO = {
   name: "초근밥",
-  version: "1.8.0",
+  version: "1.9.0",
   developer: "이주아",
   office: "서울특별시 관악구 서원동",
   email: "jualee0402@ga.go.kr",
