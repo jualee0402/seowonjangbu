@@ -54,8 +54,8 @@
   }
 
   body {
-    /* Pretendard는 index.html에서 불러옴. 오프라인이면 기기 기본 글꼴 */
-    font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+    /* 기기 기본 글꼴 (안드로이드 기본 글꼴, 아이폰 애플 SD 산돌고딕 Neo, 윈도우 맑은 고딕). 따로 내려받지 않음 */
+    font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
     background: var(--bg);
     color: var(--text);
     font-size: 16px;
@@ -109,7 +109,20 @@
   }
 }
 
-.sheet-backdrop {
+/* 가운데 확인창 */
+@keyframes pop-in {
+  from {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.sheet-backdrop,
+.confirm-backdrop {
   animation: fade-in 0.15s ease-out;
 }
 
@@ -117,9 +130,15 @@
   animation: sheet-up 0.2s ease-out;
 }
 
+.confirm-panel {
+  animation: pop-in 0.16s ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sheet-backdrop,
-  .sheet-panel {
+  .sheet-panel,
+  .confirm-backdrop,
+  .confirm-panel {
     animation: none;
   }
 }
