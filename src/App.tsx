@@ -6,9 +6,6 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  MEAL_MONTHLY_CAP,
-  MEAL_PRICE,
-  OVERTIME_MONTHLY_LIMIT,
   combineDateTime,
   computeRecord,
   dateKeyOf,
@@ -17,6 +14,7 @@ import {
   formatWon,
   monthKeyOf,
   pad,
+  shiftDate,
   shiftMonth,
   summarizeMonth,
   type ComputedRecord,
@@ -24,6 +22,19 @@ import {
   type MonthSummary,
   type WorkRecord,
 } from "./lib/worktime";
+import {
+  DEFAULT_RULES,
+  FIRST_FROM,
+  RULES_KEY,
+  loadRules,
+  rulesFor,
+  rulesLabel,
+  sameRules,
+  saveRules,
+  sortRules,
+  validateRules,
+  type Rules,
+} from "./lib/rules";
 import {
   CUSTOM_HOLIDAY_NAMES,
   DEFAULT_CUSTOM_NAME,
@@ -56,7 +67,15 @@ const C = {
 };
 
 type MealType = "ledger" | "personal";
-type SheetName = "work" | "meal" | "holiday" | "settings";
+type SheetName = "work" | "meal" | "holiday" | "settings" | "rules";
+
+/** 근무 입력창에서 넘겨주는 값 (outIso가 null이면 아직 근무 중) */
+type WorkInput = {
+  dateKey: string;
+  inIso: string;
+  outIso: string | null;
+  holidayChange?: HolidayOverride | null;
+};
 
 /* ───────── 저장소 ───────── */
 
@@ -125,6 +144,7 @@ export default function App({ banner }: { banner?: ReactNode }) {
   const [records, setRecords] = useState<WorkRecord[]>(() => loadList<WorkRecord>(RECORDS_KEY));
   const [ledger, setLedger] = useState<LedgerEntry[]>(() => loadList<LedgerEntry>(LEDGER_KEY));
   const [holidays, setHolidays] = useState<HolidayOverrides>(() => loadHolidayOverrides());
+  const [rules, setRules] = useState<Rules[]>(() => loadRules());
   const [now, setNow] = useState(() => new Date());
   const todayKey = dateKeyOf(now);
   const currentMonth = monthKeyOf(now);
@@ -133,6 +153,9 @@ export default function App({ banner }: { banner?: ReactNode }) {
   const [sheet, setSheet] = useState<SheetName | null>(null);
   const [holidaySheetMonth, setHolidaySheetMonth] = useState(currentMonth);
   const [mealType, setMealType] = useState<MealType>("ledger");
+  /** 수정 중인 기록 (null이면 새로 입력) */
+  const [editingWork, setEditingWork] = useState<WorkRecord | null>(null);
+  const [editingMeal, setEditingMeal] = useState<LedgerEntry | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   // 시계: 30초마다, 그리고 앱으로 돌아올 때 갱신
@@ -164,15 +187,23 @@ export default function App({ banner }: { banner?: ReactNode }) {
   const dayInfoOf = (k: string) => getDayInfo(k, holidays);
 
   const computed = useMemo(
-    () => records.map((r) => computeRecord(r, (k) => isHolidayInfo(getDayInfo(k, holidays)))),
-    [records, holidays],
+    () =>
+      records.map((r) =>
+        computeRecord(
+          r,
+          (k) => isHolidayInfo(getDayInfo(k, holidays)),
+          (m) => rulesFor(rules, m),
+        ),
+      ),
+    [records, holidays, rules],
   );
 
   const openRecord = useMemo(() => records.find((r) => !r.clockOut) ?? null, [records]);
 
+  const monthRules = rulesFor(rules, viewMonth);
   const summary = useMemo(
-    () => summarizeMonth(computed, ledger, viewMonth),
-    [computed, ledger, viewMonth],
+    () => summarizeMonth(computed, ledger, viewMonth, rulesFor(rules, viewMonth)),
+    [computed, ledger, viewMonth, rules],
   );
 
   const monthWorks = useMemo(
@@ -249,7 +280,7 @@ export default function App({ banner }: { banner?: ReactNode }) {
       const ok = confirm(
         `${formatMonthDay(dateKeyOf(start))} ${formatTime(start)} 출근 기록이 아직 열려 있어요.\n` +
           `지금(${formatMonthDay(dateKeyOf(t))} ${formatTime(t)}) 퇴근으로 기록할까요?\n\n` +
-          "퇴근 기록을 깜빡했다면 '취소'를 누른 뒤, 근무 내역에서 그 기록을 지우고 '근무 직접 입력'으로 다시 넣어 주세요.",
+          "퇴근 기록을 깜빡했다면 '취소'를 누른 뒤, 근무 내역에서 그 기록을 눌러 '수정'으로 실제 퇴근 시간을 넣어 주세요.",
       );
       if (!ok) return;
     }
@@ -259,27 +290,70 @@ export default function App({ banner }: { banner?: ReactNode }) {
     setToast(`퇴근 기록 ${formatTime(t)}`);
   }
 
-  function addWork(input: {
-    dateKey: string;
-    inIso: string;
-    outIso: string;
-    holidayChange?: HolidayOverride | null;
-  }) {
-    commitRecords([...records, { id: uid(), clockIn: input.inIso, clockOut: input.outIso }]);
-    if (input.holidayChange !== undefined) setHoliday(input.dateKey, input.holidayChange);
-    setSheet(null);
-    setViewMonth(input.dateKey.slice(0, 7));
-    setListTab("work");
-    setToast("근무 기록을 추가했어요.");
+  function openWorkSheet(record: WorkRecord | null) {
+    setEditingWork(record);
+    setSheet("work");
   }
 
-  function addMeal(entry: Omit<LedgerEntry, "id">) {
-    commitLedger([{ id: uid(), ...entry }, ...ledger]);
+  function openMealSheet(entry: LedgerEntry | null) {
+    setEditingMeal(entry);
+    setSheet("meal");
+  }
+
+  /** 근무 입력창 저장: 새 기록 추가 또는 수정 */
+  function saveWork(input: WorkInput) {
+    const editing = editingWork;
+    if (editing) {
+      commitRecords(
+        records.map((r) =>
+          r.id === editing.id ? { ...r, clockIn: input.inIso, clockOut: input.outIso } : r,
+        ),
+      );
+    } else {
+      commitRecords([...records, { id: uid(), clockIn: input.inIso, clockOut: input.outIso }]);
+    }
+    if (input.holidayChange !== undefined) setHoliday(input.dateKey, input.holidayChange);
+    setSheet(null);
+    setEditingWork(null);
+    setViewMonth(input.dateKey.slice(0, 7));
+    setListTab("work");
+    setToast(editing ? "근무 기록을 수정했어요." : "근무 기록을 추가했어요.");
+  }
+
+  /** 식사 입력창 저장: 새 기록 추가 또는 수정 */
+  function saveMeal(entry: Omit<LedgerEntry, "id">) {
+    const editing = editingMeal;
+    if (editing) {
+      commitLedger(
+        ledger.map((e) =>
+          e.id === editing.id
+            ? { id: e.id, date: entry.date, amount: entry.amount, type: entry.type, ...(entry.memo ? { memo: entry.memo } : {}) }
+            : e,
+        ),
+      );
+    } else {
+      commitLedger([{ id: uid(), ...entry }, ...ledger]);
+    }
     setMealType(entry.type ?? "ledger");
     setSheet(null);
+    setEditingMeal(null);
     setViewMonth(entry.date.slice(0, 7));
     setListTab("meal");
-    setToast(entry.type === "personal" ? "내돈내산 식사를 기록했어요." : "장부 식사를 기록했어요.");
+    setToast(
+      editing
+        ? "식사 기록을 수정했어요."
+        : entry.type === "personal"
+          ? "내돈내산 식사를 기록했어요."
+          : "장부 식사를 기록했어요.",
+    );
+  }
+
+  function saveRulesList(next: Rules[]) {
+    const sorted = sortRules(next);
+    setRules(sorted);
+    saveRules(sorted);
+    setSheet(null);
+    setToast("계산 규칙을 저장했어요.");
   }
 
   function deleteRecord(id: string) {
@@ -318,7 +392,7 @@ export default function App({ banner }: { banner?: ReactNode }) {
   function resetAll() {
     if (
       !confirm(
-        "정말 모든 데이터를 초기화할까요?\n근무 내역, 식사 내역, 휴일 설정이 모두 삭제됩니다.",
+        "정말 모든 데이터를 초기화할까요?\n근무 내역, 식사 내역, 휴일 설정이 모두 삭제되고 계산 규칙도 기본값으로 돌아갑니다.",
       )
     )
       return;
@@ -326,9 +400,11 @@ export default function App({ banner }: { banner?: ReactNode }) {
     localStorage.removeItem(RECORDS_KEY);
     localStorage.removeItem(LEDGER_KEY);
     localStorage.removeItem(HOLIDAYS_KEY);
+    localStorage.removeItem(RULES_KEY);
     setRecords([]);
     setLedger([]);
     setHolidays({});
+    setRules(DEFAULT_RULES);
     setToast("모든 데이터를 초기화했어요.");
   }
 
@@ -363,8 +439,8 @@ export default function App({ banner }: { banner?: ReactNode }) {
             todayDone={todayDone}
             onClockIn={clockIn}
             onClockOut={clockOut}
-            onAddWork={() => setSheet("work")}
-            onAddMeal={() => setSheet("meal")}
+            onAddWork={() => openWorkSheet(null)}
+            onAddMeal={() => openMealSheet(null)}
           />
 
           {/* 보기: 월별 내역 */}
@@ -402,7 +478,7 @@ export default function App({ banner }: { banner?: ReactNode }) {
               </button>
             </div>
 
-            <SummaryPanel summary={summary} />
+            <SummaryPanel summary={summary} rules={monthRules} />
 
             <div
               role="tablist"
@@ -445,6 +521,7 @@ export default function App({ banner }: { banner?: ReactNode }) {
                 rows={monthWorks}
                 dayInfoOf={dayInfoOf}
                 monthLabel={monthShort(viewMonth)}
+                onEdit={(c) => openWorkSheet(c.record)}
                 onDelete={deleteRecord}
               />
             ) : (
@@ -453,6 +530,7 @@ export default function App({ banner }: { banner?: ReactNode }) {
                 rows={monthMeals}
                 dayInfoOf={dayInfoOf}
                 monthLabel={monthShort(viewMonth)}
+                onEdit={openMealSheet}
                 onDelete={deleteMeal}
               />
             )}
@@ -462,18 +540,31 @@ export default function App({ banner }: { banner?: ReactNode }) {
 
       {sheet === "work" && (
         <WorkSheet
+          record={editingWork}
+          isOpenRecord={!!editingWork && editingWork.id === openRecord?.id}
           todayKey={todayKey}
           holidays={holidays}
+          rules={rules}
           onClose={() => setSheet(null)}
-          onSubmit={addWork}
+          onSubmit={saveWork}
         />
       )}
       {sheet === "meal" && (
         <MealSheet
+          entry={editingMeal}
           todayKey={todayKey}
           defaultType={mealType}
+          rules={rules}
           onClose={() => setSheet(null)}
-          onSubmit={addMeal}
+          onSubmit={saveMeal}
+        />
+      )}
+      {sheet === "rules" && (
+        <RulesSheet
+          rules={rules}
+          currentMonth={currentMonth}
+          onClose={() => setSheet(null)}
+          onSave={saveRulesList}
         />
       )}
       {sheet === "holiday" && (
@@ -488,8 +579,10 @@ export default function App({ banner }: { banner?: ReactNode }) {
       )}
       {sheet === "settings" && (
         <SettingsSheet
+          currentRules={rulesFor(rules, currentMonth)}
           onClose={() => setSheet(null)}
           onOpenHoliday={openHolidaySheet}
+          onOpenRules={() => setSheet("rules")}
           onResetRecords={() => {
             resetRecords();
             setSheet(null);
@@ -622,8 +715,10 @@ function TodayStatus({
 
 /* ───────── 월 요약 ───────── */
 
-function SummaryPanel({ summary: s }: { summary: MonthSummary }) {
-  const otOver = s.overtimeHours > OVERTIME_MONTHLY_LIMIT;
+function SummaryPanel({ summary: s, rules }: { summary: MonthSummary; rules: Rules }) {
+  const limit = rules.monthlyLimitHours;
+  const cap = rules.mealMonthlyCap;
+  const otOver = s.overtimeHours > limit;
   return (
     <div className="mt-3 rounded-2xl border bg-white p-4">
       <dl className="space-y-1 text-sm">
@@ -657,25 +752,25 @@ function SummaryPanel({ summary: s }: { summary: MonthSummary }) {
       <div className="mt-4 grid grid-cols-2 gap-4 border-t pt-3.5">
         <Meter
           label="초과근무"
-          limit={`한도 ${OVERTIME_MONTHLY_LIMIT}시간`}
+          limit={`한도 ${limit}시간`}
           value={formatHours(s.overtimeHours)}
-          ratio={s.overtimeHours / OVERTIME_MONTHLY_LIMIT}
+          ratio={s.overtimeHours / limit}
           color={otOver ? "#d97706" : C.overtime}
           note={
             otOver
-              ? `한도 초과 ${formatHours(s.overtimeHours - OVERTIME_MONTHLY_LIMIT)}`
-              : `한도까지 ${formatHours(OVERTIME_MONTHLY_LIMIT - s.overtimeHours)}`
+              ? `한도 초과 ${formatHours(s.overtimeHours - limit)}`
+              : `한도까지 ${formatHours(limit - s.overtimeHours)}`
           }
           warn={otOver}
         />
         <Meter
           label="급량비"
-          limit={`최대 ${MEAL_MONTHLY_CAP}개`}
+          limit={`최대 ${cap}개`}
           value={`${s.meals}개`}
-          ratio={s.rawMeals / MEAL_MONTHLY_CAP}
+          ratio={cap > 0 ? s.rawMeals / cap : 0}
           color={C.meal}
           note={
-            s.rawMeals > MEAL_MONTHLY_CAP
+            s.rawMeals > cap
               ? `평일 ${s.weekdayMeals} · 휴일 ${s.holidayMeals} (총 ${s.rawMeals}개)`
               : `평일 ${s.weekdayMeals} · 휴일 ${s.holidayMeals}`
           }
@@ -745,8 +840,8 @@ function workBreakdown(c: ComputedRecord): [string, string][] {
     ["근무", `${formatHours(c.workedHours)} (${c.holiday ? "휴일" : "평일"})`],
   ];
   if (!c.holiday) {
-    if (c.morningHours > 0) rows.push(["9시 전", formatHours(c.morningHours)]);
-    if (c.eveningHours > 0) rows.push(["18시 후", formatHours(c.eveningHours)]);
+    if (c.morningHours > 0) rows.push([`${c.rules.workStart} 전`, formatHours(c.morningHours)]);
+    if (c.eveningHours > 0) rows.push([`${c.rules.workEnd} 후`, formatHours(c.eveningHours)]);
     if (c.deductionHours > 0) rows.push(["공제", `− ${formatHours(c.deductionHours)}`]);
   }
   return rows;
@@ -756,11 +851,13 @@ function WorkList({
   rows,
   dayInfoOf,
   monthLabel,
+  onEdit,
   onDelete,
 }: {
   rows: ComputedRecord[];
   dayInfoOf: (k: string) => DayInfo;
   monthLabel: string;
+  onEdit: (c: ComputedRecord) => void;
   onDelete: (id: string) => boolean;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
@@ -843,6 +940,7 @@ function WorkList({
                 </button>
                 {open && (
                   <Detail
+                    onEdit={() => onEdit(c)}
                     onDelete={() => {
                       if (onDelete(c.record.id)) setOpenId(null);
                     }}
@@ -858,14 +956,16 @@ function WorkList({
                           ]}
                         />
                         {!c.holiday && c.morningHours === 0 && c.eveningHours === 0 && (
-                          <p style={{ color: C.muted }}>9시~18시 안의 근무라 초과근무가 없어요.</p>
+                          <p style={{ color: C.muted }}>
+                            {c.rules.workStart}~{c.rules.workEnd} 안의 근무라 초과근무가 없어요.
+                          </p>
                         )}
                         {c.holiday && (
                           <p style={{ color: C.muted }}>휴일 근무는 근무시간 전체를 인정해요.</p>
                         )}
-                        {c.cappedByOldRule && (
+                        {c.cappedAt !== null && (
                           <p style={{ color: "#b45309" }}>
-                            2026년 9월까지 적용된 1일 4시간 상한으로 4시간만 인정했어요.
+                            이 기간 규칙의 하루 상한({formatHours(c.cappedAt)})까지만 인정했어요.
                           </p>
                         )}
                       </>
@@ -880,7 +980,7 @@ function WorkList({
         </ul>
       </div>
       <p className="mt-2 text-center text-[11px]" style={{ color: C.faint }}>
-        줄을 누르면 계산 내역과 삭제 버튼이 보여요.
+        줄을 누르면 계산 내역과 수정·삭제 버튼이 보여요.
       </p>
     </>
   );
@@ -890,11 +990,13 @@ function MealList({
   rows,
   dayInfoOf,
   monthLabel,
+  onEdit,
   onDelete,
 }: {
   rows: LedgerEntry[];
   dayInfoOf: (k: string) => DayInfo;
   monthLabel: string;
+  onEdit: (e: LedgerEntry) => void;
   onDelete: (id: string) => boolean;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
@@ -947,6 +1049,7 @@ function MealList({
                 </button>
                 {open && (
                   <Detail
+                    onEdit={() => onEdit(e)}
                     onDelete={() => {
                       if (onDelete(e.id)) setOpenId(null);
                     }}
@@ -969,23 +1072,38 @@ function MealList({
         </ul>
       </div>
       <p className="mt-2 text-center text-[11px]" style={{ color: C.faint }}>
-        줄을 누르면 삭제 버튼이 보여요.
+        줄을 누르면 수정·삭제 버튼이 보여요.
       </p>
     </>
   );
 }
 
-function Detail({ children, onDelete }: { children: ReactNode; onDelete: () => void }) {
+function Detail({
+  children,
+  onEdit,
+  onDelete,
+}: {
+  children: ReactNode;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
     <div className="mx-3 mb-3 rounded-xl px-3 py-2.5 text-[13px]" style={{ background: "#f3f4f6" }}>
       <div className="space-y-1.5">{children}</div>
-      <div className="mt-2 flex justify-end">
+      <div className="mt-2.5 flex justify-end gap-2">
+        <button
+          onClick={onEdit}
+          className="rounded-lg px-3.5 py-1.5 text-xs font-semibold transition hover:brightness-95"
+          style={{ background: "var(--navy-soft)", color: C.navy }}
+        >
+          수정
+        </button>
         <button
           onClick={onDelete}
-          className="rounded-lg px-3 py-1.5 text-xs font-semibold transition hover:brightness-95"
+          className="rounded-lg px-3.5 py-1.5 text-xs font-semibold transition hover:brightness-95"
           style={{ background: "#fee2e2", color: "#b91c1c" }}
         >
-          이 기록 삭제
+          삭제
         </button>
       </div>
     </div>
@@ -1145,26 +1263,36 @@ function dayTypeText(info: DayInfo) {
 }
 
 function WorkSheet({
+  record,
+  isOpenRecord,
   todayKey,
   holidays,
+  rules,
   onClose,
   onSubmit,
 }: {
+  /** 수정할 기록 (null이면 새로 입력) */
+  record: WorkRecord | null;
+  /** 수정하는 기록이 아직 퇴근 전(근무 중)인지 */
+  isOpenRecord: boolean;
   todayKey: string;
   holidays: HolidayOverrides;
+  rules: Rules[];
   onClose: () => void;
-  onSubmit: (input: {
-    dateKey: string;
-    inIso: string;
-    outIso: string;
-    holidayChange?: HolidayOverride | null;
-  }) => void;
+  onSubmit: (input: WorkInput) => void;
 }) {
-  const [date, setDate] = useState(todayKey);
-  const [inTime, setInTime] = useState("09:00");
-  const [outTime, setOutTime] = useState("19:00");
+  const editing = !!record;
+  const initStart = record ? new Date(record.clockIn) : null;
+  const initEnd = record?.clockOut ? new Date(record.clockOut) : null;
+  const initDate = initStart ? dateKeyOf(initStart) : todayKey;
+
+  const [date, setDate] = useState(initDate);
+  const [inTime, setInTime] = useState(initStart ? formatTime(initStart) : "09:00");
+  const [outTime, setOutTime] = useState(initEnd ? formatTime(initEnd) : isOpenRecord ? "18:00" : "19:00");
+  const [nextDay, setNextDay] = useState(!!initEnd && dateKeyOf(initEnd) !== initDate);
+  const [working, setWorking] = useState(isOpenRecord);
   const [markHoliday, setMarkHoliday] = useState(
-    () => getDayInfo(todayKey, holidays).source === "custom",
+    () => getDayInfo(initDate, holidays).source === "custom",
   );
 
   const validDate = isValidDateKey(date);
@@ -1175,17 +1303,25 @@ function WorkSheet({
   const holiday = info ? (toggleable ? markHoliday : isHolidayInfo(info)) : false;
 
   const inIso = validDate ? combineDateTime(date, inTime) : null;
-  const outIso = validDate ? combineDateTime(date, outTime) : null;
+  const outIso =
+    validDate && !working ? combineDateTime(nextDay ? shiftDate(date, 1) : date, outTime) : null;
   const error = !validDate
     ? "날짜를 선택해 주세요."
-    : !inIso || !outIso
+    : !inIso || (!working && !outIso)
       ? "시간 형식을 확인해 주세요. (예: 09:00)"
-      : new Date(outIso).getTime() <= new Date(inIso).getTime()
-        ? "퇴근 시간은 출근 시간보다 늦어야 해요."
-        : null;
+      : working && new Date(inIso).getTime() > Date.now()
+        ? "출근 시간이 지금보다 늦어요."
+        : !working && outIso && new Date(outIso).getTime() <= new Date(inIso).getTime()
+          ? "퇴근이 출근보다 빨라요. 자정을 넘겨 퇴근했다면 '다음 날 퇴근'을 체크하세요."
+          : null;
+  const showNextDay = !working && (nextDay || outTime <= inTime);
   const preview =
     !error && inIso && outIso
-      ? computeRecord({ id: "preview", clockIn: inIso, clockOut: outIso }, () => holiday)
+      ? computeRecord(
+          { id: "preview", clockIn: inIso, clockOut: outIso },
+          () => holiday,
+          (m) => rulesFor(rules, m),
+        )
       : null;
 
   function changeDate(v: string) {
@@ -1194,20 +1330,24 @@ function WorkSheet({
   }
 
   function submit() {
-    if (error || !inIso || !outIso || !info) return;
+    if (error || !inIso || !info) return;
     let holidayChange: HolidayOverride | null | undefined;
     if (toggleable) {
       const wasCustom = info.source === "custom";
       if (markHoliday && !wasCustom) holidayChange = { on: true, name: DEFAULT_CUSTOM_NAME };
       if (!markHoliday && wasCustom) holidayChange = null;
     }
-    onSubmit({ dateKey: date, inIso, outIso, holidayChange });
+    onSubmit({ dateKey: date, inIso, outIso: working ? null : outIso, holidayChange });
   }
 
   return (
-    <Sheet title="근무 직접 입력" description="출퇴근 버튼을 누르지 못한 날의 시간을 입력하세요." onClose={onClose}>
+    <Sheet
+      title={editing ? "근무 기록 수정" : "근무 직접 입력"}
+      description={editing ? "날짜와 출퇴근 시간을 고칠 수 있어요." : "출퇴근 버튼을 누르지 못한 날의 시간을 입력하세요."}
+      onClose={onClose}
+    >
       <div>
-        <FieldLabel htmlFor="work-date">날짜</FieldLabel>
+        <FieldLabel htmlFor="work-date">날짜 (출근한 날)</FieldLabel>
         <input
           id="work-date"
           type="date"
@@ -1217,10 +1357,7 @@ function WorkSheet({
           style={inputStyle}
         />
         {info && (
-          <p
-            className="mt-1.5 text-xs"
-            style={{ color: holiday ? C.holiday : C.muted }}
-          >
+          <p className="mt-1.5 text-xs" style={{ color: holiday ? C.holiday : C.muted }}>
             {toggleable && markHoliday && info.source !== "custom"
               ? "휴일 기준으로 계산해요."
               : toggleable && !markHoliday && info.source === "custom"
@@ -1259,27 +1396,72 @@ function WorkSheet({
         </div>
         <div>
           <FieldLabel htmlFor="work-out">퇴근 시간</FieldLabel>
-          <input
-            id="work-out"
-            type="time"
-            value={outTime}
-            onChange={(e) => setOutTime(e.target.value)}
-            className={`${inputClass} tabular-nums`}
-            style={inputStyle}
-          />
+          {working ? (
+            <div
+              className="mt-1 flex h-[50px] items-center rounded-lg border px-3 text-base"
+              style={{ background: "#f3f4f6", color: C.faint }}
+            >
+              퇴근 전
+            </div>
+          ) : (
+            <input
+              id="work-out"
+              type="time"
+              value={outTime}
+              onChange={(e) => setOutTime(e.target.value)}
+              className={`${inputClass} tabular-nums`}
+              style={inputStyle}
+            />
+          )}
         </div>
       </div>
+      {isOpenRecord && (
+        <label className="flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-sm">
+          <input
+            type="checkbox"
+            checked={working}
+            onChange={(e) => setWorking(e.target.checked)}
+            className="size-4 accent-[#1e3a8a]"
+          />
+          <span>
+            아직 퇴근 전이에요{" "}
+            <span className="text-xs" style={{ color: C.muted }}>
+              (근무 중)
+            </span>
+          </span>
+        </label>
+      )}
+      {showNextDay && (
+        <label className="flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-sm">
+          <input
+            type="checkbox"
+            checked={nextDay}
+            onChange={(e) => setNextDay(e.target.checked)}
+            className="size-4 accent-[#1e3a8a]"
+          />
+          <span>
+            다음 날 퇴근{" "}
+            <span className="text-xs" style={{ color: C.muted }}>
+              (자정을 넘겨 근무)
+            </span>
+          </span>
+        </label>
+      )}
       <div
         className="rounded-xl px-3 py-2.5 text-sm"
         style={error ? { background: "#fef2f2", color: "#b91c1c" } : { background: "#f9fafb" }}
       >
         {error ??
-          (preview && (
-            <>
-              근무 {formatHours(preview.workedHours)} · 초과{" "}
-              <b style={{ color: C.overtime }}>{formatHours(preview.overtimeHours)}</b> · 급량비{" "}
-              <b style={{ color: C.meal }}>{preview.meals}개</b>
-            </>
+          (working ? (
+            <span style={{ color: C.muted }}>퇴근을 기록하면 초과근무와 급량비가 계산돼요.</span>
+          ) : (
+            preview && (
+              <>
+                근무 {formatHours(preview.workedHours)} · 초과{" "}
+                <b style={{ color: C.overtime }}>{formatHours(preview.overtimeHours)}</b> · 급량비{" "}
+                <b style={{ color: C.meal }}>{preview.meals}개</b>
+              </>
+            )
           ))}
       </div>
       <button
@@ -1288,30 +1470,39 @@ function WorkSheet({
         className="w-full rounded-xl py-3.5 text-base font-bold text-white transition enabled:hover:brightness-125 active:scale-[0.98] disabled:opacity-40"
         style={{ background: C.navy }}
       >
-        추가하기
+        {editing ? "저장" : "추가하기"}
       </button>
     </Sheet>
   );
 }
 
 function MealSheet({
+  entry,
   todayKey,
   defaultType,
+  rules,
   onClose,
   onSubmit,
 }: {
+  /** 수정할 기록 (null이면 새로 입력) */
+  entry: LedgerEntry | null;
   todayKey: string;
   defaultType: MealType;
+  rules: Rules[];
   onClose: () => void;
   onSubmit: (entry: Omit<LedgerEntry, "id">) => void;
 }) {
-  const [type, setType] = useState<MealType>(defaultType);
-  const [date, setDate] = useState(todayKey);
-  const [amount, setAmount] = useState("");
-  const [memo, setMemo] = useState("");
+  const editing = !!entry;
+  const [type, setType] = useState<MealType>(
+    entry ? (entry.type === "personal" ? "personal" : "ledger") : defaultType,
+  );
+  const [date, setDate] = useState(entry?.date ?? todayKey);
+  const [amount, setAmount] = useState(entry ? String(Math.round(Number(entry.amount) || 0)) : "");
+  const [memo, setMemo] = useState(entry?.memo ?? "");
   const value = Number(amount);
   const canSave = isValidDateKey(date) && value > 0;
   const isLedger = type === "ledger";
+  const price = rulesFor(rules, (isValidDateKey(date) ? date : todayKey).slice(0, 7)).mealPrice;
 
   function submit() {
     if (!canSave) return;
@@ -1319,7 +1510,7 @@ function MealSheet({
   }
 
   return (
-    <Sheet title="식사 기록" onClose={onClose}>
+    <Sheet title={editing ? "식사 기록 수정" : "식사 기록"} onClose={onClose}>
       <div className="grid grid-cols-2 gap-1 rounded-xl p-1" style={{ background: "#f3f4f6" }}>
         {(
           [
@@ -1363,18 +1554,18 @@ function MealSheet({
           <FieldLabel htmlFor="meal-amount">금액 (원)</FieldLabel>
           <button
             type="button"
-            onClick={() => setAmount(String(MEAL_PRICE))}
+            onClick={() => setAmount(String(price))}
             className="rounded-full border px-2.5 py-0.5 text-xs font-semibold tabular-nums transition hover:brightness-95"
             style={{ color: C.navy, borderColor: "var(--navy-line)", background: "var(--navy-soft)" }}
           >
-            {MEAL_PRICE.toLocaleString("ko-KR")}원
+            {price.toLocaleString("ko-KR")}원
           </button>
         </div>
         <input
           id="meal-amount"
           type="text"
           inputMode="numeric"
-          placeholder="예: 9,000"
+          placeholder={`예: ${price.toLocaleString("ko-KR")}`}
           value={amount ? Number(amount).toLocaleString("ko-KR") : ""}
           onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, "").slice(0, 9))}
           className={`${inputClass} tabular-nums`}
@@ -1718,50 +1909,50 @@ function SelectedDayPanel({
 
 /* ───────── 설정 ───────── */
 
+function SettingsRow({ title, sub, onClick }: { title: string; sub: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex w-full items-center justify-between gap-3 rounded-xl border px-4 py-3.5 text-left transition hover:bg-gray-50"
+    >
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold">{title}</span>
+        <span className="block truncate text-xs" style={{ color: C.muted }}>
+          {sub}
+        </span>
+      </span>
+      <span className="shrink-0" style={{ color: C.faint }}>
+        <ChevronIcon dir="right" />
+      </span>
+    </button>
+  );
+}
+
 function SettingsSheet({
+  currentRules: r,
   onClose,
   onOpenHoliday,
+  onOpenRules,
   onResetRecords,
   onResetLedger,
   onResetAll,
 }: {
+  currentRules: Rules;
   onClose: () => void;
   onOpenHoliday: () => void;
+  onOpenRules: () => void;
   onResetRecords: () => void;
   onResetLedger: () => void;
   onResetAll: () => void;
 }) {
   return (
     <Sheet title="설정" onClose={onClose}>
-      <button
-        onClick={onOpenHoliday}
-        className="flex w-full items-center justify-between rounded-xl border px-4 py-3.5 text-left transition hover:bg-gray-50"
-      >
-        <span>
-          <span className="block text-sm font-semibold">휴일 설정</span>
-          <span className="block text-xs" style={{ color: C.muted }}>
-            임시공휴일 등 평일에 쉬는 날 지정
-          </span>
-        </span>
-        <span style={{ color: C.faint }}>
-          <ChevronIcon dir="right" />
-        </span>
-      </button>
-
-      <details className="rounded-xl border px-4 py-3">
-        <summary className="cursor-pointer text-sm font-semibold">계산 기준</summary>
-        <ul className="mt-2 list-disc space-y-1.5 pl-4 text-xs" style={{ color: "#4b5563" }}>
-          <li>평일 초과근무: 9시 전과 18시 후 근무를 더한 뒤 1시간 공제</li>
-          <li>휴일 초과근무: 근무시간 전체 (토·일, 공휴일, 직접 지정한 휴일)</li>
-          <li>1일 4시간 상한은 2026년 10월 1일부터 없어졌어요. 그 전 기록은 당시 기준으로 계산해요.</li>
-          <li>월 초과근무 한도 {OVERTIME_MONTHLY_LIMIT}시간은 참고로만 보여 줘요.</li>
-          <li>평일 급량비: 9시 전 1시간 이상 1개, 18시 후 1시간 이상 1개 (각각 모자라도 합쳐서 1시간 이상이면 1개)</li>
-          <li>휴일 급량비: 1시간 넘게 근무하면 1개</li>
-          <li>
-            급량비는 하루 최대 2개, 한 달 최대 {MEAL_MONTHLY_CAP}개, 1개 {formatWon(MEAL_PRICE)}
-          </li>
-        </ul>
-      </details>
+      <SettingsRow title="휴일 설정" sub="임시공휴일 등 평일에 쉬는 날 지정" onClick={onOpenHoliday} />
+      <SettingsRow
+        title="계산 규칙"
+        sub={`평일 ${r.workStart}~${r.workEnd} · 공제 ${r.deductMinutes}분 · 급량비 ${formatWon(r.mealPrice)}`}
+        onClick={onOpenRules}
+      />
 
       <div className="pt-2">
         <div className="text-xs font-semibold" style={{ color: C.muted }}>
@@ -1792,6 +1983,371 @@ function SettingsSheet({
       >
         전체 데이터 초기화
       </button>
+    </Sheet>
+  );
+}
+
+/* ───────── 계산 규칙 ───────── */
+
+/** 숫자만 받는 작은 입력칸. nullable이면 비울 때 null(사용 안 함) */
+function NumField({
+  label,
+  value,
+  onChange,
+  unit,
+  nullable,
+  money,
+  placeholder,
+}: {
+  label: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  unit: string;
+  nullable?: boolean;
+  money?: boolean;
+  placeholder?: string;
+}) {
+  const text =
+    value === null || Number.isNaN(value) ? "" : money ? value.toLocaleString("ko-KR") : String(value);
+  return (
+    <span className="flex items-center gap-1.5">
+      <input
+        type="text"
+        inputMode="numeric"
+        aria-label={label}
+        value={text}
+        placeholder={placeholder}
+        onChange={(e) => {
+          const digits = e.target.value.replace(/[^0-9]/g, "").slice(0, 7);
+          onChange(digits === "" ? (nullable ? null : NaN) : Number(digits));
+        }}
+        className={`${money ? "w-24" : "w-16"} rounded-lg border px-2.5 py-2 text-right text-sm tabular-nums`}
+        style={{ background: "#f9fafb" }}
+      />
+      <span className="w-7 text-xs" style={{ color: C.muted }}>
+        {unit}
+      </span>
+    </span>
+  );
+}
+
+function RuleRow({ label, help, children }: { label: string; help?: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+      <div className="min-w-0">
+        <div className="text-sm">{label}</div>
+        {help && (
+          <div className="mt-0.5 text-[11px] leading-snug" style={{ color: C.muted }}>
+            {help}
+          </div>
+        )}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function RulesSheet({
+  rules,
+  currentMonth,
+  onClose,
+  onSave,
+}: {
+  rules: Rules[];
+  currentMonth: string;
+  onClose: () => void;
+  onSave: (next: Rules[]) => void;
+}) {
+  const [list, setList] = useState<Rules[]>(() => sortRules(rules));
+  const [selFrom, setSelFrom] = useState(() => rulesFor(sortRules(rules), currentMonth).from);
+  const [adding, setAdding] = useState(false);
+  const [cy, cm] = currentMonth.split("-").map(Number);
+  const [newYear, setNewYear] = useState(cm === 12 ? cy + 1 : cy);
+  const [newMonth, setNewMonth] = useState(cm === 12 ? 1 : cm + 1);
+
+  const sel = list.find((r) => r.from === selFrom) ?? list[list.length - 1];
+  const idx = list.indexOf(sel);
+  const currentFrom = rulesFor(list, currentMonth).from;
+  const nextFrom = list[idx + 1]?.from;
+  const until = nextFrom ? monthTitle(shiftMonth(nextFrom, -1)) : null;
+  const period =
+    sel.from === FIRST_FROM
+      ? until
+        ? `처음부터 ${until}까지 적용돼요.`
+        : "모든 기간에 적용돼요."
+      : until
+        ? `${monthTitle(sel.from)}부터 ${until}까지 적용돼요.`
+        : `${monthTitle(sel.from)}부터 계속 적용돼요.`;
+  const dirty = !sameRules(list, rules);
+  const problems = list.flatMap((r) => validateRules(r).map((m) => `${rulesLabel(r)} 규칙: ${m}`));
+
+  function patch(p: Partial<Rules>) {
+    setList((l) => l.map((r) => (r.from === sel.from ? { ...r, ...p } : r)));
+  }
+
+  function addVersion() {
+    const from = `${newYear}-${pad(newMonth)}`;
+    if (!list.some((r) => r.from === from)) {
+      setList(sortRules([...list, { ...rulesFor(list, from), from }]));
+    }
+    setSelFrom(from);
+    setAdding(false);
+  }
+
+  function removeVersion() {
+    if (sel.from === FIRST_FROM) return;
+    if (!confirm(`${rulesLabel(sel)} 규칙을 지울까요?\n그 기간 기록은 바로 앞 규칙으로 계산돼요.`)) return;
+    const next = list.filter((r) => r.from !== sel.from);
+    setList(next);
+    setSelFrom(rulesFor(next, currentMonth).from);
+  }
+
+  function resetDefaults() {
+    if (!confirm("계산 규칙을 기본값으로 되돌릴까요?\n'저장'을 눌러야 적용돼요.")) return;
+    setList(DEFAULT_RULES);
+    setSelFrom(rulesFor(DEFAULT_RULES, currentMonth).from);
+  }
+
+  function close() {
+    if (dirty && !confirm("저장하지 않은 변경 사항이 있어요. 닫을까요?")) return;
+    onClose();
+  }
+
+  const minutesToHours = (m: number | null) => (m === null ? null : m / 60);
+  const hoursToMinutes = (h: number | null) => (h === null ? null : h * 60);
+  const years = Array.from({ length: 7 }, (_, i) => cy - 2 + i);
+  const selectClass = "rounded-lg border px-2 py-1.5 text-sm";
+
+  return (
+    <Sheet
+      title="계산 규칙"
+      description="규정이 바뀌면 시행 월부터 새 규칙을 추가하세요. 지난 기록은 그때 규칙으로 계산돼요."
+      onClose={close}
+    >
+      <div className="flex flex-wrap gap-1.5">
+        {list.map((r) => {
+          const active = r.from === sel.from;
+          return (
+            <button
+              key={r.from}
+              onClick={() => setSelFrom(r.from)}
+              aria-pressed={active}
+              className="rounded-full border px-3 py-1.5 text-xs font-semibold transition hover:brightness-95"
+              style={
+                active
+                  ? { background: C.navy, color: "white", borderColor: C.navy }
+                  : { background: "white", color: "#374151" }
+              }
+            >
+              {rulesLabel(r)}
+              {r.from === currentFrom ? " · 지금" : ""}
+            </button>
+          );
+        })}
+        <button
+          onClick={() => setAdding((a) => !a)}
+          aria-expanded={adding}
+          className="rounded-full border border-dashed px-3 py-1.5 text-xs font-semibold transition hover:bg-gray-50"
+          style={{ color: C.navy, borderColor: "var(--navy-line)" }}
+        >
+          + 새 규칙
+        </button>
+      </div>
+
+      {adding && (
+        <div className="rounded-xl px-3 py-3" style={{ background: "#f9fafb" }}>
+          <div className="text-sm font-semibold">언제부터 바뀌나요?</div>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-sm">
+            <select
+              aria-label="시행 연도"
+              value={newYear}
+              onChange={(e) => setNewYear(Number(e.target.value))}
+              className={selectClass}
+            >
+              {years.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+            년
+            <select
+              aria-label="시행 월"
+              value={newMonth}
+              onChange={(e) => setNewMonth(Number(e.target.value))}
+              className={selectClass}
+            >
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+            월부터
+            <button
+              onClick={addVersion}
+              className="ml-auto rounded-lg px-3.5 py-2 text-xs font-semibold text-white transition hover:brightness-125"
+              style={{ background: C.navy }}
+            >
+              추가
+            </button>
+          </div>
+          <p className="mt-2 text-[11px]" style={{ color: C.muted }}>
+            그 달에 쓰던 규칙을 복사해서 만들어요. 바뀐 항목만 고치세요.
+          </p>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs" style={{ color: C.muted }}>
+          {period}
+        </p>
+        {sel.from !== FIRST_FROM && (
+          <button
+            onClick={removeVersion}
+            className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold transition hover:brightness-95"
+            style={{ background: "#fee2e2", color: "#b91c1c" }}
+          >
+            이 규칙 삭제
+          </button>
+        )}
+      </div>
+
+      <div>
+        <div className="mb-1.5 text-xs font-semibold" style={{ color: C.muted }}>
+          초과근무
+        </div>
+        <div className="divide-y rounded-xl border">
+          <div className="px-3 py-2.5">
+            <div className="text-sm">평일 정규 근무</div>
+            <div className="mt-0.5 text-[11px] leading-snug" style={{ color: C.muted }}>
+              이 시간 전과 후의 근무를 초과근무로 봐요
+            </div>
+            <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+              <input
+                type="time"
+                aria-label="정규 근무 시작"
+                value={sel.workStart}
+                onChange={(e) => patch({ workStart: e.target.value })}
+                className="w-full min-w-0 rounded-lg border px-2.5 py-2 text-sm tabular-nums"
+                style={{ background: "#f9fafb" }}
+              />
+              <span style={{ color: C.muted }}>~</span>
+              <input
+                type="time"
+                aria-label="정규 근무 종료"
+                value={sel.workEnd}
+                onChange={(e) => patch({ workEnd: e.target.value })}
+                className="w-full min-w-0 rounded-lg border px-2.5 py-2 text-sm tabular-nums"
+                style={{ background: "#f9fafb" }}
+              />
+            </div>
+          </div>
+          <RuleRow label="평일 공제" help="합친 초과근무에서 빼는 시간">
+            <NumField label="평일 공제" value={sel.deductMinutes} onChange={(v) => patch({ deductMinutes: v ?? NaN })} unit="분" />
+          </RuleRow>
+          <RuleRow label="하루 상한 (평일)" help="비우면 상한 없음">
+            <NumField
+              label="평일 하루 상한"
+              value={minutesToHours(sel.weekdayCapMinutes)}
+              onChange={(v) => patch({ weekdayCapMinutes: hoursToMinutes(v) })}
+              unit="시간"
+              nullable
+              placeholder="없음"
+            />
+          </RuleRow>
+          <RuleRow label="하루 상한 (휴일)" help="비우면 상한 없음">
+            <NumField
+              label="휴일 하루 상한"
+              value={minutesToHours(sel.holidayCapMinutes)}
+              onChange={(v) => patch({ holidayCapMinutes: hoursToMinutes(v) })}
+              unit="시간"
+              nullable
+              placeholder="없음"
+            />
+          </RuleRow>
+          <RuleRow label="월 한도" help="요약 화면에 참고로만 보여 줘요">
+            <NumField label="월 한도" value={sel.monthlyLimitHours} onChange={(v) => patch({ monthlyLimitHours: v ?? NaN })} unit="시간" />
+          </RuleRow>
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-1.5 text-xs font-semibold" style={{ color: C.muted }}>
+          급량비
+        </div>
+        <div className="divide-y rounded-xl border">
+          <RuleRow label="1개 금액">
+            <NumField label="급량비 1개 금액" value={sel.mealPrice} onChange={(v) => patch({ mealPrice: v ?? NaN })} unit="원" money />
+          </RuleRow>
+          <RuleRow label="한 달 최대">
+            <NumField label="급량비 한 달 최대" value={sel.mealMonthlyCap} onChange={(v) => patch({ mealMonthlyCap: v ?? NaN })} unit="개" />
+          </RuleRow>
+          <RuleRow label="평일 기준" help="정규 시작 전·종료 후 근무가 각각 이 시간 이상이면 1개씩">
+            <NumField label="평일 급량비 기준" value={sel.weekdayMealMinutes} onChange={(v) => patch({ weekdayMealMinutes: v ?? NaN })} unit="분" />
+          </RuleRow>
+          <label className="flex items-center justify-between gap-3 px-3 py-2.5">
+            <span className="min-w-0">
+              <span className="block text-sm">평일 합산 인정</span>
+              <span className="mt-0.5 block text-[11px] leading-snug" style={{ color: C.muted }}>
+                둘 다 모자라도 합쳐서 기준 이상이면 1개
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={sel.weekdayMealCombined}
+              onChange={(e) => patch({ weekdayMealCombined: e.target.checked })}
+              className="size-5 shrink-0 accent-[#1e3a8a]"
+            />
+          </label>
+          <RuleRow label="평일 하루 최대">
+            <NumField label="평일 하루 최대" value={sel.weekdayMealMax} onChange={(v) => patch({ weekdayMealMax: v ?? NaN })} unit="개" />
+          </RuleRow>
+          <RuleRow label="휴일 기준" help="근무가 이 시간을 넘으면 1개">
+            <NumField label="휴일 급량비 기준" value={sel.holidayMealMinutes} onChange={(v) => patch({ holidayMealMinutes: v ?? NaN })} unit="분" />
+          </RuleRow>
+          <RuleRow label="휴일 2개 기준" help="근무가 이 시간을 넘으면 2개. 비우면 사용 안 함">
+            <NumField
+              label="휴일 2개 기준"
+              value={sel.holidaySecondMealMinutes}
+              onChange={(v) => patch({ holidaySecondMealMinutes: v })}
+              unit="분"
+              nullable
+              placeholder="없음"
+            />
+          </RuleRow>
+        </div>
+      </div>
+
+      <div
+        className="sticky -mx-5 border-t bg-white px-5 pt-3"
+        style={{
+          bottom: "calc(-1 * max(1.25rem, env(safe-area-inset-bottom)))",
+          paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))",
+        }}
+      >
+        {problems.length > 0 && (
+          <p className="mb-2 text-xs" style={{ color: "#b91c1c" }}>
+            {problems[0]}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button
+            onClick={resetDefaults}
+            className="rounded-xl border px-4 py-3 text-sm font-semibold transition hover:bg-gray-50"
+          >
+            기본값으로
+          </button>
+          <button
+            onClick={() => onSave(list)}
+            disabled={!dirty || problems.length > 0}
+            className="flex-1 rounded-xl py-3 text-base font-bold text-white transition enabled:hover:brightness-125 disabled:opacity-40"
+            style={{ background: C.navy }}
+          >
+            저장
+          </button>
+        </div>
+      </div>
     </Sheet>
   );
 }
