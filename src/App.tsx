@@ -1,10 +1,11 @@
 /**
- * 서원동 초과근무·급량비 계산기
+ * 야근밥 — 서원동 초과근무·급량비 계산기
  * @author 이주아
  * @since 2026.04
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import logoUrl from "./assets/yageunbap.svg";
 import {
   combineDateTime,
   computeRecord,
@@ -417,9 +418,18 @@ export default function App({ banner }: { banner?: ReactNode }) {
         {banner}
         <header className="sticky top-0 z-20 shadow-sm" style={{ background: C.navy, color: "white" }}>
           <div className="flex items-center justify-between px-4 pt-4 pb-3">
-            <div>
-              <div className="text-[11px] opacity-80">서원동 주민센터</div>
-              <h1 className="text-[17px] leading-snug font-bold">초과근무 · 급량비 계산기</h1>
+            <div className="flex items-center gap-2.5">
+              <img
+                src={logoUrl}
+                alt=""
+                width={38}
+                height={38}
+                className="size-[38px] shrink-0 rounded-[10px] ring-1 ring-white/25"
+              />
+              <div>
+                <div className="text-[11px] opacity-80">서원동 초과근무·급량비</div>
+                <h1 className="text-[19px] leading-tight font-bold">야근밥</h1>
+              </div>
             </div>
             <button
               onClick={() => setSheet("settings")}

@@ -1,6 +1,8 @@
 {
-  "name": "서원장부",
-  "short_name": "서원장부",
+  "name": "야근밥",
+  "short_name": "야근밥",
+  "description": "서원동 초과근무·급량비 계산기",
+  "lang": "ko",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#1e3a8a",
@@ -9,12 +11,20 @@
     {
       "src": "/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
     },
     {
       "src": "/icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }
