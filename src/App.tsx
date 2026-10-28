@@ -1,11 +1,11 @@
 /**
- * 야근밥 — 서원동 초과근무·급량비 계산기
+ * 초근밥 — 서원동 초과근무·급량비 계산기
  * @author 이주아
  * @since 2026.04
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import logoUrl from "./assets/yageunbap.svg";
+import logoUrl from "./assets/chogeunbap.svg";
 import {
   combineDateTime,
   computeRecord,
@@ -424,7 +424,7 @@ export default function App({ banner }: { banner?: ReactNode }) {
                 height={30}
                 className="size-[30px] shrink-0 rounded-[8px] ring-1 ring-white/20"
               />
-              <h1 className="text-[18px] font-bold tracking-[-0.01em] text-white">야근밥</h1>
+              <h1 className="text-[18px] font-bold tracking-[-0.01em] text-white">초근밥</h1>
             </div>
             <IconButton label="설정" onClick={() => setSheet("settings")} onDark>
               <GearIcon />
